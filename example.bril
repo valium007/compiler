@@ -1,0 +1,21 @@
+@main {
+.entry:
+  a: int = const 47;
+  b: int = const 42;
+  c: int = const 50;
+  jmp .left
+
+.left:
++
+  jmp .end;
+
+
+.right:
+  a: int = const 2;
+  c: int = const 10;
+  jmp .end;
+
+.end:
+  d: int = sub a c;
+  print d;
+}

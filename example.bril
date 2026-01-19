@@ -1,14 +1,13 @@
 @main {
-.entry:
   a: int = const 47;
   b: int = const 42;
-  c: int = const 50;
-  jmp .left
+  cond: bool = const true;
+  br cond .left .right;
 
 .left:
-+
+  b: int = const 1;
+  c: int = const 5;
   jmp .end;
-
 
 .right:
   a: int = const 2;

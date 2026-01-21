@@ -138,7 +138,7 @@ pub struct BasicBlock {
     pub succs: Vec<BasicBlockId>,
 }
 
-pub struct Builder {
+pub struct BrilBuilder {
     pub blocks: Vec<BasicBlock>,
     pub instructions: Vec<Inst>,
 
@@ -147,7 +147,7 @@ pub struct Builder {
     pub label_to_id: HashMap<String, BasicBlockId>,
 }
 
-impl Builder {
+impl BrilBuilder {
     pub fn new() -> Self {
         Self {
             blocks: Vec::new(),
@@ -184,7 +184,7 @@ impl Builder {
     }
 }
 
-pub fn create_basic_blocks(builder: &mut Builder) {
+pub fn create_basic_blocks(builder: &mut BrilBuilder) {
     let mut current_id = 0;
     let instrs = std::mem::take(&mut builder.instructions);
 
@@ -200,7 +200,7 @@ pub fn create_basic_blocks(builder: &mut Builder) {
     }
 }
 
-pub fn fill_preds(builder: &mut Builder) {
+pub fn fill_preds(builder: &mut BrilBuilder) {
     let num_blocks = builder.blocks.len();
     builder.preds.insert(0, BTreeSet::new());
     for block_id in 0..num_blocks {

@@ -1,5 +1,6 @@
-use crate::ir::{brilir::*, dominator::Dominator, hir::to_hir, to_ssa};
-use crate::ir::passes::liveness::*;
+use crate::ir::passes::liveness::{self, *};
+use crate::ir::{bril_to_ssa, brilir};
+use crate::ir::{brilir::*, dominator::Dominator};
 
 pub fn parse_instructions() -> Result<(), serde_json::Error> {
     let data = r#"
@@ -93,18 +94,11 @@ pub fn parse_instructions() -> Result<(), serde_json::Error> {
     "#;
 
     let parsed: Vec<Inst> = serde_json::from_str(&data).unwrap();
-    let mut builder = Builder::new(); //brilir
+    let mut builder = BrilBuilder::new(); //brilir
+
     builder.instructions = parsed;
     create_basic_blocks(&mut builder);
     fill_preds(&mut builder);
-
-    let hir = to_hir(&builder); //brilir to hir
-    for block in hir.blocks.iter() {
-        println!("bb_{} succs: {:?}", block.id, block.succs);
-        for inst in block.body.iter() {
-            println!("  {:?}", inst);
-        }
-    }
 
     let mut dom = Dominator::new(); //dominator compute
     let df = dom.compute(
@@ -114,17 +108,17 @@ pub fn parse_instructions() -> Result<(), serde_json::Error> {
         &builder.preds,
     );
 
-    let mut ssa_builder = to_ssa(&hir.blocks, &builder.label_to_id); //ssa form
+    let mut ssa_builder = bril_to_ssa::to_ssa(&builder);
 
     for block in ssa_builder.blocks.iter_mut() {
-      block.succs = builder.succs.get(&block.id).unwrap().clone();
-      block.preds = builder.preds.get(&block.id).unwrap().clone();
+        block.succs = builder.succs.get(&block.id).unwrap().clone();
+        block.preds = builder.preds.get(&block.id).unwrap().clone();
     }
 
     ssa_builder.insert_phi(df);
     ssa_builder.run_rename(&builder.succs, &builder.preds);
     for block in ssa_builder.blocks.iter_mut() {
-      block.compute_def_use();
+        block.compute_def_use();
     }
     for block in ssa_builder.blocks.iter() {
         println!("bb_{}", block.id);
@@ -135,9 +129,13 @@ pub fn parse_instructions() -> Result<(), serde_json::Error> {
 
     let mut liveness = Liveness2::new();
     let vars = ssa_builder.get_vars();
-    liveness.compute_livesets(&ssa_builder.blocks,vars);
+    liveness.compute_livesets(&ssa_builder.blocks, vars);
 
-    println!("{:?} {:?}",liveness.live_in, liveness.live_out);
+    println!("{:?} {:?}", liveness.live_in, liveness.live_out);
+
+    let mut liveness = Liveness::new();
+    liveness.compute_liveness(&ssa_builder.blocks);
+    println!("{:?} {:?}", liveness.livein, liveness.liveout);
 
     Ok(())
 }

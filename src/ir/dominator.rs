@@ -1,6 +1,6 @@
+use crate::ir::id::BasicBlockId;
 use hashbrown::HashMap;
 use std::collections::BTreeSet;
-use crate::ir::id::BasicBlockId;
 
 pub struct Dominator {
     rpo: Vec<BasicBlockId>,

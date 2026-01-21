@@ -24,7 +24,6 @@ pub enum Value {
 }
 
 impl Value {
-    
     pub fn variable_mut(&mut self) -> &mut Variable {
         match self {
             Value::Variable(v) => v,
@@ -35,7 +34,7 @@ impl Value {
     pub fn variable(&self) -> &Variable {
         match self {
             Value::Variable(v) => v,
-            _ => panic!("Expected variable")
+            _ => panic!("Expected variable"),
         }
     }
 
@@ -112,6 +111,7 @@ pub enum IrInstruction {
     IrJmp(Jmp),
     IrBr(Br),
     IrPhi(Phi),
+    Nop,
 }
 
 impl IrInstruction {
@@ -119,7 +119,7 @@ impl IrInstruction {
         let mut ssa_rhs = Vec::new();
 
         match self {
-            IrInstruction::IrBinOp(BinOp { lhs, rhs , ..}) => {
+            IrInstruction::IrBinOp(BinOp { lhs, rhs, .. }) => {
                 ssa_rhs.push(lhs.variable_mut());
                 ssa_rhs.push(rhs.variable_mut());
             }
@@ -134,7 +134,7 @@ impl IrInstruction {
         let mut ssa_lhs = Vec::new();
 
         match self {
-            IrInstruction::IrBinOp(BinOp {dst, ..}) => {
+            IrInstruction::IrBinOp(BinOp { dst, .. }) => {
                 ssa_lhs.push(dst.variable_mut());
             }
             IrInstruction::IrLoad(Load { dst, .. }) => ssa_lhs.push(dst.variable_mut()),
@@ -160,6 +160,11 @@ impl Debug for IrInstruction {
             IrInstruction::IrBr(Br { dst, truthy, falsy }) => {
                 write!(f, "br {:?} {:?} {:?} ", dst, truthy, falsy)
             }
+
+            IrInstruction::Nop => {
+                write!(f, "nop")
+            }
+
             IrInstruction::IrPhi(Phi { var, operands }) => {
                 write!(f, "{:?} = phi {:?} ", var, operands)
             }
@@ -167,14 +172,13 @@ impl Debug for IrInstruction {
     }
 }
 
-
 pub struct BasicBlock {
     pub id: BasicBlockId,
     pub instructions: Vec<IrInstruction>,
     pub preds: BTreeSet<BasicBlockId>,
     pub succs: BTreeSet<BasicBlockId>,
     pub defs: HashSet<Variable>,
-    pub uses: HashSet<Variable>
+    pub uses: HashSet<Variable>,
 }
 
 impl BasicBlock {
@@ -185,10 +189,9 @@ impl BasicBlock {
             preds: BTreeSet::new(),
             succs: BTreeSet::new(),
             defs: HashSet::new(),
-            uses: HashSet::new()
+            uses: HashSet::new(),
         }
     }
-
 
     pub fn phis_mut(&mut self) -> Vec<&mut Phi> {
         let mut phis: Vec<&mut Phi> = Vec::new();
@@ -201,7 +204,7 @@ impl BasicBlock {
         phis
     }
 
-     pub fn phi(&self) -> Vec<&Phi> {
+    pub fn phi(&self) -> Vec<&Phi> {
         let mut phis: Vec<&Phi> = Vec::new();
         for inst in self.instructions.iter() {
             match inst {
@@ -210,8 +213,7 @@ impl BasicBlock {
             }
         }
         phis
-     }
-
+    }
 
     pub fn statements_mut(&mut self) -> Vec<&mut IrInstruction> {
         let mut statements = Vec::new();
@@ -241,13 +243,10 @@ impl BasicBlock {
                     uses.insert(*use_);
                 }
             }
-
         }
         self.defs = defs;
         self.uses = uses;
-        
     }
-
 }
 
 pub struct SSA {
@@ -281,7 +280,7 @@ impl SSA {
                         }
                         _ => unreachable!(),
                     },
-                    IrInstruction::IrBinOp(BinOp { dst, ..}) => match dst {
+                    IrInstruction::IrBinOp(BinOp { dst, .. }) => match dst {
                         Value::Variable(dst) => {
                             vars.insert(*dst);
                         }
@@ -308,7 +307,7 @@ impl SSA {
                         }
                         _ => unreachable!(),
                     },
-                    IrInstruction::IrBinOp(BinOp { dst,..}) => match dst {
+                    IrInstruction::IrBinOp(BinOp { dst, .. }) => match dst {
                         Value::Variable(dst) => {
                             if dst == var {
                                 defs.push(block.id);

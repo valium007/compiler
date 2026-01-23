@@ -1,9 +1,62 @@
-use crate::ir::{
-    id::BasicBlockId,
-    ssa::{BasicBlock, Variable},
-};
-use hashbrown::{HashMap, HashSet};
-use std::collections::BTreeSet;
+use crate::ir::ssa::{BasicBlock, Variable};
+use hashbrown::HashSet;
+
+pub struct Liveness;
+impl Liveness {
+    pub fn compute_liveness(
+    blocks: &Vec<BasicBlock>,
+) -> (Vec<HashSet<Variable>>, Vec<HashSet<Variable>>) {
+    let mut livein: Vec<HashSet<Variable>> = vec![HashSet::new(); blocks.len()];
+    let mut liveout: Vec<HashSet<Variable>> = vec![HashSet::new(); blocks.len()];
+
+    loop {
+        let mut changed = false;
+
+        for block in blocks.iter() {
+            let old_in = livein[block.id].clone();
+            let old_out = liveout[block.id].clone();
+
+            // Compute LiveOut first
+            let mut new_liveout = HashSet::new();
+            
+            for succ in block.succs.iter() {
+                for var in livein[*succ].iter() {
+                    if !phi_defs(&blocks[*succ]).contains(var) {
+                        new_liveout.insert(var.clone());
+                    }
+                }
+            }
+            
+            new_liveout.extend(phi_uses(blocks, block));
+            
+            // Compute LiveIn
+            let mut diff = HashSet::new();
+            for var in new_liveout.iter() {
+                if !block.defs.contains(var) {
+                    diff.insert(var.clone());
+                }
+            }
+
+            let mut new_livein = phi_defs(block);
+            new_livein.extend(block.uses.clone());
+            new_livein.extend(diff);
+
+            // Update sets
+            livein[block.id] = new_livein;
+            liveout[block.id] = new_liveout;
+
+            if old_in != livein[block.id] || old_out != liveout[block.id] {
+                changed = true;
+            }
+        }
+
+        if !changed {
+            break;
+        }
+    }
+    (livein, liveout)
+}
+}
 
 fn phi_defs(block: &BasicBlock) -> HashSet<Variable> {
     let mut phi_defs = HashSet::new();
@@ -25,111 +78,4 @@ fn phi_uses(blocks: &Vec<BasicBlock>, block: &BasicBlock) -> HashSet<Variable> {
         }
     }
     uses
-}
-
-pub struct Liveness2 {
-    pub live_in: HashMap<BasicBlockId, Vec<Variable>>,
-    pub live_out: HashMap<BasicBlockId, Vec<Variable>>,
-}
-
-impl Liveness2 {
-    pub fn new() -> Self {
-        Liveness2 {
-            live_in: HashMap::new(),
-            live_out: HashMap::new(),
-        }
-    }
-
-    pub fn compute_livesets(&mut self, blocks: &Vec<BasicBlock>, vars: BTreeSet<Variable>) {
-        for block in blocks.iter() {
-            self.live_in.insert(block.id, Vec::new());
-            self.live_out.insert(block.id, Vec::new());
-        }
-
-        for var in vars.iter() {
-            for block in blocks.iter() {
-                if !block.uses.contains(var) && !phi_uses(blocks, block).contains(var) {
-                    continue;
-                }
-                if phi_uses(blocks, block).contains(var) {
-                    self.live_out.get_mut(&block.id).unwrap().push(*var);
-                }
-                self.up_and_mark(blocks, block, var);
-            }
-        }
-    }
-
-    fn up_and_mark(&mut self, blocks: &Vec<BasicBlock>, block: &BasicBlock, var: &Variable) {
-        if block.defs.contains(var) {
-            return;
-        }
-
-        if self.live_in.get(&block.id).unwrap().last() == Some(var) {
-            return;
-        }
-
-        self.live_in.get_mut(&block.id).unwrap().push(*var);
-
-        if phi_defs(block).contains(var) {
-            return;
-        }
-
-        for pred in block.preds.iter() {
-            if self.live_out.get(pred).unwrap().last() != Some(var) {
-                self.live_out.get_mut(pred).unwrap().push(*var);
-            }
-            self.up_and_mark(blocks, &blocks[*pred], var);
-        }
-    }
-}
-
-pub struct Liveness {
-    pub livein: Vec<HashSet<Variable>>,
-    pub liveout: Vec<HashSet<Variable>>,
-}
-
-impl Liveness {
-    pub fn new() -> Self {
-        Liveness {
-            livein: Vec::new(),
-            liveout: Vec::new(),
-        }
-    }
-
-    pub fn compute_liveness(&mut self, blocks: &Vec<BasicBlock>) {
-        for b in 0..blocks.len() {
-            self.livein.push(HashSet::new());
-            self.liveout.push(HashSet::new());
-        }
-
-        for block in blocks.iter() {
-            for var in phi_uses(&blocks, &block).iter() {
-                self.liveout[block.id].insert(*var);
-                self.up_and_mark(blocks, block, var);
-            }
-            for var in block.uses.iter() {
-                self.up_and_mark(blocks, block, var);
-            }
-        }
-    }
-
-    pub fn up_and_mark(&mut self, blocks: &Vec<BasicBlock>, block: &BasicBlock, var: &Variable) {
-        if block.defs.contains(var) {
-            return;
-        }
-        if self.livein[block.id].contains(var) {
-            return;
-        }
-
-        if phi_defs(block).contains(var) {
-            return;
-        }
-
-        self.livein[block.id].insert(*var);
-
-        for pred in block.preds.iter() {
-            self.liveout[*pred].insert(*var);
-            self.up_and_mark(blocks, block, var);
-        }
-    }
 }

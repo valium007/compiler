@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
-use crate::ir::SSA;
+use crate::ir::ssa::SSA;
 use crate::ir::id::*;
 
 use crate::ir::{
-    Variable,
+    ssa::Variable,
     brilir::{self},
     ssa,
 };
@@ -71,7 +71,9 @@ pub fn inst_ssa(
                 bb: *label_to_id.get(&inst.labels[0]).unwrap(),
             }),
 
-            _ => ssa::IrInstruction::Nop,
+            brilir::Op::Print(inst) => ssa::IrInstruction::IrPrint(ssa::Print {
+                src: ssa::Value::Variable(*var_to_id.get(&inst.args[0]).unwrap()),
+            }),
         },
         _ => ssa::IrInstruction::Nop,
     };
@@ -113,7 +115,10 @@ pub fn vars_to_ids(blocks: &Vec<brilir::BasicBlock>) -> HashMap<String, Variable
                     brilir::Op::Br(inst) => {
                         vars.insert(inst.args[0].clone());
                     }
-                    _ => {}
+                    brilir::Op::Jmp(..) => {}
+                    brilir::Op::Print(inst) => {
+                        vars.insert(inst.args[0].clone());
+                    }
                 },
             }
         }

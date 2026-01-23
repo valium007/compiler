@@ -2,6 +2,7 @@ use hashbrown::{HashMap, HashSet};
 use std::collections::BTreeSet;
 use std::fmt::{self, Debug};
 
+use crate::ir::brilir::{LivenessInfo, Op};
 use crate::ir::id::*;
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
@@ -104,6 +105,11 @@ pub struct Phi {
     pub operands: Vec<(Value, BasicBlockId)>,
 }
 
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct Print {
+    pub src: Value,
+}
+
 #[derive(Clone, Eq, PartialEq)]
 pub enum IrInstruction {
     IrLoad(Load),
@@ -111,6 +117,7 @@ pub enum IrInstruction {
     IrJmp(Jmp),
     IrBr(Br),
     IrPhi(Phi),
+    IrPrint(Print),
     Nop,
 }
 
@@ -124,7 +131,7 @@ impl IrInstruction {
                 ssa_rhs.push(rhs.variable_mut());
             }
             IrInstruction::IrBr(Br { dst, .. }) => ssa_rhs.push(dst.variable_mut()),
-
+            IrInstruction::IrPrint(Print { src }) => ssa_rhs.push(src.variable_mut()),
             _ => {}
         }
         ssa_rhs
@@ -168,6 +175,10 @@ impl Debug for IrInstruction {
             IrInstruction::IrPhi(Phi { var, operands }) => {
                 write!(f, "{:?} = phi {:?} ", var, operands)
             }
+
+            IrInstruction::IrPrint(Print { src }) => {
+                write!(f, "print {:?}", src)
+            }
         }
     }
 }
@@ -175,8 +186,8 @@ impl Debug for IrInstruction {
 pub struct BasicBlock {
     pub id: BasicBlockId,
     pub instructions: Vec<IrInstruction>,
-    pub preds: BTreeSet<BasicBlockId>,
-    pub succs: BTreeSet<BasicBlockId>,
+    pub preds: Vec<BasicBlockId>,
+    pub succs: Vec<BasicBlockId>,
     pub defs: HashSet<Variable>,
     pub uses: HashSet<Variable>,
 }
@@ -186,8 +197,8 @@ impl BasicBlock {
         BasicBlock {
             id: id,
             instructions: Vec::new(),
-            preds: BTreeSet::new(),
-            succs: BTreeSet::new(),
+            preds: Vec::new(),
+            succs: Vec::new(),
             defs: HashSet::new(),
             uses: HashSet::new(),
         }
@@ -322,7 +333,7 @@ impl SSA {
         defs
     }
 
-    pub fn insert_phi(&mut self, df: Vec<BTreeSet<BasicBlockId>>) {
+    pub fn insert_phi(&mut self, df: &Vec<HashSet<BasicBlockId>>, liveness_info : &LivenessInfo, var_to_id: &HashMap<String,Variable>) {
         let vars = self.get_vars();
 
         let mut has_already: BTreeSet<BasicBlockId> = BTreeSet::new();
@@ -330,6 +341,13 @@ impl SSA {
         let mut worklist: BTreeSet<BasicBlockId> = BTreeSet::new();
 
         for var in vars.iter() {
+            let mut varname = "";
+            for (name,v) in var_to_id.iter() {
+                if v == var {
+                    varname = name;
+                    break;
+                }
+            }
             for bb in self.get_var_defs(var) {
                 ever_on_worklist.insert(bb);
                 worklist.insert(bb);
@@ -337,7 +355,7 @@ impl SSA {
             while !worklist.is_empty() {
                 let x = worklist.pop_last();
                 for y in df[x.unwrap()].iter() {
-                    if !has_already.contains(y) {
+                    if !has_already.contains(y) && liveness_info.live_in.get(y).unwrap().contains(varname) {
                         self.inst_phi(
                             *y,
                             IrInstruction::IrPhi(Phi {
@@ -362,8 +380,6 @@ impl SSA {
 
     pub fn run_rename(
         &mut self,
-        succs: &HashMap<BasicBlockId, BTreeSet<BasicBlockId>>,
-        preds: &HashMap<BasicBlockId, BTreeSet<BasicBlockId>>,
     ) {
         let vars = self.get_vars().len();
         for v in 0..vars {
@@ -376,8 +392,6 @@ impl SSA {
             0,
             &mut self.blocks,
             &mut visited,
-            succs,
-            preds,
             &mut self.stacks,
             &mut self.counters,
         );
@@ -388,8 +402,6 @@ pub fn rename(
     block_id: BasicBlockId,
     blocks: &mut Vec<BasicBlock>,
     visited: &mut BTreeSet<BasicBlockId>,
-    succs: &HashMap<BasicBlockId, BTreeSet<BasicBlockId>>,
-    preds: &HashMap<BasicBlockId, BTreeSet<BasicBlockId>>,
     stacks: &mut Vec<Vec<ValueId>>,
     counters: &mut Vec<ValueId>,
 ) {
@@ -397,6 +409,8 @@ pub fn rename(
         return;
     }
     visited.insert(block_id);
+
+    let succs = blocks[block_id].succs.clone();
 
     for phi in blocks[block_id].phis_mut() {
         gen_name(&mut phi.var, stacks, counters);
@@ -412,9 +426,9 @@ pub fn rename(
         }
     }
 
-    for succ in succs.get(&block_id).unwrap().iter() {
+    for succ in succs.iter() {
         let mut j = 0;
-        for (i, pred) in preds.get(succ).unwrap().iter().enumerate() {
+        for (i, pred) in blocks[*succ].preds.iter().enumerate() {
             if *pred == block_id {
                 j = i;
             }
@@ -430,8 +444,8 @@ pub fn rename(
         }
     }
 
-    for succ in succs.get(&block_id).unwrap().iter() {
-        rename(*succ, blocks, visited, succs, preds, stacks, counters);
+    for succ in succs.iter() {
+        rename(*succ, blocks, visited, stacks, counters);
     }
 
     for inst in blocks[block_id].instructions.iter_mut() {

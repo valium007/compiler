@@ -64,6 +64,17 @@ impl Debug for Br {
     }
 }
 
+#[derive(Clone, Deserialize, Eq, Hash, PartialEq, PartialOrd, Ord)]
+pub struct Print {
+    pub args: Vec<String>,
+}
+
+impl Debug for Print {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "print {:?}", self.args[0])
+    }
+}
+
 macro_rules! bin_op {
     ($name:ident) => {
         // Define a binaryop struct. This expands to:
@@ -121,6 +132,9 @@ pub enum Op {
 
     #[serde(rename = "br")]
     Br(Br),
+
+    #[serde(rename = "print")]
+    Print(Print),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, PartialOrd, Ord)]
@@ -141,10 +155,8 @@ pub struct BasicBlock {
 pub struct BrilBuilder {
     pub blocks: Vec<BasicBlock>,
     pub instructions: Vec<Inst>,
-
-    pub succs: HashMap<BasicBlockId, BTreeSet<BasicBlockId>>,
-    pub preds: HashMap<BasicBlockId, BTreeSet<BasicBlockId>>,
     pub label_to_id: HashMap<String, BasicBlockId>,
+    pub cfg: Vec<Vec<BasicBlockId>>
 }
 
 impl BrilBuilder {
@@ -152,9 +164,8 @@ impl BrilBuilder {
         Self {
             blocks: Vec::new(),
             instructions: Vec::new(),
-            succs: HashMap::new(),
-            preds: HashMap::new(),
             label_to_id: HashMap::new(),
+            cfg: Vec::new()
         }
     }
 
@@ -177,8 +188,6 @@ impl BrilBuilder {
     }
 
     pub fn add_edge(&mut self, from: BasicBlockId, to: BasicBlockId) {
-        self.succs.entry(from).or_default().insert(to);
-        self.preds.entry(to).or_default().insert(from);
         self.blocks[from].succs.push(to);
         self.blocks[to].preds.push(from);
     }
@@ -202,7 +211,6 @@ pub fn create_basic_blocks(builder: &mut BrilBuilder) {
 
 pub fn fill_preds(builder: &mut BrilBuilder) {
     let num_blocks = builder.blocks.len();
-    builder.preds.insert(0, BTreeSet::new());
     for block_id in 0..num_blocks {
         let last_inst = builder.blocks[block_id].body.last();
 
@@ -225,10 +233,131 @@ pub fn fill_preds(builder: &mut BrilBuilder) {
             }
         }
     }
+}
 
-    if builder.blocks.last().unwrap().succs.len() == 0 {
-        builder
-            .succs
-            .insert(builder.blocks.len() - 1, BTreeSet::new());
+use std::collections::HashSet;
+
+#[derive(Debug, Clone)]
+pub struct LivenessInfo {
+    pub live_in: HashMap<BasicBlockId, BTreeSet<String>>,
+    pub live_out: HashMap<BasicBlockId, BTreeSet<String>>,
+}
+
+impl LivenessInfo {
+    pub fn new() -> Self {
+        Self {
+            live_in: HashMap::new(),
+            live_out: HashMap::new(),
+        }
     }
+}
+
+/// Helper to extract variables defined and used by an instruction
+/// Returns (definition, uses)
+fn analyze_inst(inst: &Inst) -> (Option<String>, Vec<String>) {
+    match inst {
+        Inst::Op(op) => match op {
+            Op::Load(load) => {
+                let mut uses = Vec::new();
+                if let BrilValue::Variable(v) = &load.value {
+                    uses.push(v.clone());
+                }
+                (Some(load.dest.clone()), uses)
+            }
+            Op::Add(add) => (
+                Some(add.dest.clone()),
+                vec![add.args[0].clone(), add.args[1].clone()],
+            ),
+            Op::Sub(sub) => (
+                Some(sub.dest.clone()),
+                vec![sub.args[0].clone(), sub.args[1].clone()],
+            ),
+            Op::Mul(mul) => (
+                Some(mul.dest.clone()),
+                vec![mul.args[0].clone(), mul.args[1].clone()],
+            ),
+            Op::Lt(lt) => (
+                Some(lt.dest.clone()),
+                vec![lt.args[0].clone(), lt.args[1].clone()],
+            ),
+            Op::Br(br) => (None, vec![br.args[0].clone()]),
+            Op::Print(print) => (None, print.args.clone()),
+            Op::Jmp(_) => (None, Vec::new()),
+        },
+        Inst::Label { .. } => (None, Vec::new()),
+    }
+}
+
+// Optional: Simple iterative dataflow for comparison
+pub fn compute_liveness_iterative(builder: &BrilBuilder) -> LivenessInfo {
+    let mut liveness = LivenessInfo::new();
+
+    // Initialize
+    for block_id in 0..builder.blocks.len() {
+        liveness.live_in.insert(block_id, BTreeSet::new());
+        liveness.live_out.insert(block_id, BTreeSet::new());
+    }
+
+    // Compute upward-exposed uses and defs for each block
+    let mut ue_uses: HashMap<BasicBlockId, BTreeSet<String>> = HashMap::new();
+    let mut def_vars: HashMap<BasicBlockId, BTreeSet<String>> = HashMap::new();
+
+    for (block_id, block) in builder.blocks.iter().enumerate() {
+        let mut local_defs = HashSet::new();
+        let mut local_ue = BTreeSet::new();
+
+        for inst in &block.body {
+            let (def, uses) = analyze_inst(inst);
+
+            // Upward-exposed uses
+            for var in uses {
+                if !local_defs.contains(&var) {
+                    local_ue.insert(var);
+                }
+            }
+
+            // Definitions
+            if let Some(d) = def {
+                local_defs.insert(d);
+            }
+        }
+
+        ue_uses.insert(block_id, local_ue);
+        def_vars.insert(block_id, local_defs.into_iter().collect());
+    }
+
+    // Iterate until fixed point
+    let mut changed = true;
+    while changed {
+        changed = false;
+
+        // Process blocks in reverse order (better for backward analysis)
+        for block_id in (0..builder.blocks.len()).rev() {
+            // LiveOut(B) = Union of LiveIn(S) for all successors S
+            let mut new_live_out = BTreeSet::new();
+            for &succ_id in &builder.blocks[block_id].succs {
+                new_live_out.extend(liveness.live_in.get(&succ_id).unwrap().clone());
+            }
+
+            // LiveIn(B) = UEUses(B) ∪ (LiveOut(B) \ Defs(B))
+            let mut new_live_in = ue_uses.get(&block_id).unwrap().clone();
+            let defs = def_vars.get(&block_id).unwrap();
+            for var in &new_live_out {
+                if !defs.contains(var) {
+                    new_live_in.insert(var.clone());
+                }
+            }
+
+            // Check if changed
+            if new_live_in != *liveness.live_in.get(&block_id).unwrap()
+                || new_live_out != *liveness.live_out.get(&block_id).unwrap()
+            {
+                changed = true;
+                liveness.live_in.insert(block_id, new_live_in);
+                liveness.live_out.insert(block_id, new_live_out);
+            }
+        }
+    }
+
+    liveness
 }

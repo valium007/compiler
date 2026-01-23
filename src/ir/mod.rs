@@ -1,16 +1,7 @@
-use std::collections::BTreeSet;
-
-use hashbrown::HashMap;
-
-use crate::ir::{
-    id::BasicBlockId,
-    ssa::{BasicBlock, BinOp, SSA, Variable},
-};
+use crate::ir::id::BasicBlockId;
 pub mod bril_to_ssa;
 pub mod brilir;
-pub mod dominator;
+pub mod dominance;
 pub mod id;
-pub mod irfmt;
 pub mod passes;
 pub mod ssa;
-

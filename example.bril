@@ -1,20 +1,32 @@
 @main {
-  a: int = const 47;
-  b: int = const 42;
-  cond: bool = const true;
-  br cond .left .right;
+.entry:
+  x: int = const 0;
+  i: int = const 0;
+  one: int = const 1;
+jmp .loop;
 
-.left:
-  b: int = const 1;
-  c: int = const 5;
-  jmp .end;
 
-.right:
-  a: int = const 2;
-  c: int = const 10;
-  jmp .end;
+.loop:
+  max: int = const 10;
+  cond: bool = lt i max;
+  br cond .body .exit;
 
-.end:
-  d: int = sub a c;
-  print d;
-}
+.body:
+  mid: int = const 5;
+  cond: bool = lt i mid;
+  br cond .then .endif;
+
+.then:
+  x: int = add x one;
+  jmp .endif;
+
+.endif:
+  factor: int = const 2;
+  x: int = mul x factor;
+
+  i: int = add i one;
+  jmp .loop;
+
+.exit:
+  print x;
+} 

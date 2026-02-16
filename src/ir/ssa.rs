@@ -462,6 +462,7 @@ pub fn rename(
     }
 }
 
+
 pub fn gen_name(var: &mut Variable, stacks: &mut Vec<Vec<ValueId>>, counters: &mut Vec<ValueId>) {
     let i = counters[var.id];
     var.index = i;

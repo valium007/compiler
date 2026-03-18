@@ -1,7 +1,6 @@
-
 pub mod builder;
-pub mod instruction;
 pub mod id;
+pub mod instruction;
 pub mod liveness;
 pub use liveness::compute_liveness;
 

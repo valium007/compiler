@@ -1,6 +1,6 @@
+use crate::brilir::id::*;
 use anyhow::Result;
 use std::fmt::Debug;
-use crate::brilir::id::*;
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
 pub struct Variable {

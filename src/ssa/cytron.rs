@@ -3,9 +3,9 @@ use hashbrown::{HashMap, HashSet};
 use petgraph::algo::dominators::simple_fast;
 use petgraph::prelude::GraphMap;
 
-use crate::brilir::builder::{BasicBlock, Builder, Phi, BasicBlockId};
-use crate::brilir::instruction::Variable;
+use crate::brilir::builder::{BasicBlock, BasicBlockId, Builder, Phi};
 use crate::brilir::id::ValueId;
+use crate::brilir::instruction::Variable;
 
 pub fn insert_phi(builder: &mut Builder, df: Vec<Vec<BasicBlockId>>) -> Result<()> {
     let livein = builder.liveness.0.clone();

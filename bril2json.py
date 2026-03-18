@@ -342,7 +342,9 @@ def bril2txt():
     print_prog(json.load(sys.stdin))
 
 
-with open("example.bril", "r") as f:
+with open("program.bril", "r") as f:
     # Read the entire file
     content = f.read()
-    print(parse_bril(content))
+    with open("out.json", "w+") as o:
+        o.write(parse_bril(content))
+        

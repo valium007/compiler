@@ -1,0 +1,17 @@
+@main {
+.entry:
+  a: int = const 67;
+
+.while_cond:
+  zero: int = const 20;
+  is_term: bool = eq a zero;
+  br is_term .while_finish .while_body;
+
+.while_body:
+  one: int = const 1;
+  a: int = sub a one;
+  jmp .while_cond;
+
+.while_finish:
+  print a;
+}

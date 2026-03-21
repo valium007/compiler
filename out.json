@@ -6,144 +6,239 @@
           "label": "entry"
         },
         {
-          "dest": "x",
+          "dest": "v0",
           "op": "const",
-          "type": "int",
-          "value": 0
+          "type": "bool",
+          "value": true
         },
         {
-          "dest": "i",
-          "op": "const",
-          "type": "int",
-          "value": 0
+          "args": [
+            "v0"
+          ],
+          "dest": "a",
+          "op": "id",
+          "type": "bool"
         },
         {
-          "dest": "one",
+          "dest": "v1",
+          "op": "const",
+          "type": "bool",
+          "value": false
+        },
+        {
+          "args": [
+            "v1"
+          ],
+          "dest": "b",
+          "op": "id",
+          "type": "bool"
+        },
+        {
+          "args": [
+            "a"
+          ],
+          "dest": "v3",
+          "op": "id",
+          "type": "bool"
+        },
+        {
+          "args": [
+            "v3"
+          ],
+          "labels": [
+            "then.2",
+            "else.2"
+          ],
+          "op": "br"
+        },
+        {
+          "label": "then.2"
+        },
+        {
+          "dest": "v4",
           "op": "const",
           "type": "int",
           "value": 1
         },
         {
-          "labels": [
-            "loop"
+          "args": [
+            "v4"
           ],
-          "op": "jmp"
+          "op": "print"
         },
         {
-          "label": "loop"
-        },
-        {
-          "dest": "max",
+          "dest": "v5",
           "op": "const",
           "type": "int",
-          "value": 10
+          "value": 0
         },
         {
           "args": [
-            "i",
-            "max"
+            "b"
           ],
-          "dest": "cond",
-          "op": "lt",
+          "dest": "v7",
+          "op": "id",
           "type": "bool"
         },
         {
           "args": [
-            "cond"
+            "v7"
           ],
           "labels": [
-            "body",
-            "exit"
+            "then.6",
+            "else.6"
           ],
           "op": "br"
         },
         {
-          "label": "body"
+          "label": "then.6"
         },
         {
-          "dest": "mid",
-          "op": "const",
-          "type": "int",
-          "value": 5
-        },
-        {
-          "args": [
-            "i",
-            "mid"
-          ],
-          "dest": "cond",
-          "op": "lt",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "cond"
-          ],
-          "labels": [
-            "then",
-            "endif"
-          ],
-          "op": "br"
-        },
-        {
-          "label": "then"
-        },
-        {
-          "args": [
-            "x",
-            "one"
-          ],
-          "dest": "x",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "labels": [
-            "endif"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "endif"
-        },
-        {
-          "dest": "factor",
+          "dest": "v8",
           "op": "const",
           "type": "int",
           "value": 2
         },
         {
           "args": [
-            "x",
-            "factor"
+            "v8"
           ],
-          "dest": "x",
-          "op": "mul",
-          "type": "int"
+          "op": "print"
         },
         {
-          "args": [
-            "i",
-            "one"
-          ],
-          "dest": "i",
-          "op": "add",
-          "type": "int"
+          "dest": "v9",
+          "op": "const",
+          "type": "int",
+          "value": 0
         },
         {
           "labels": [
-            "loop"
+            "endif.6"
           ],
           "op": "jmp"
         },
         {
-          "label": "exit"
+          "label": "else.6"
+        },
+        {
+          "dest": "v10",
+          "op": "const",
+          "type": "int",
+          "value": 3
         },
         {
           "args": [
-            "x"
+            "v10"
           ],
           "op": "print"
+        },
+        {
+          "dest": "v11",
+          "op": "const",
+          "type": "int",
+          "value": 0
+        },
+        {
+          "label": "endif.6"
+        },
+        {
+          "labels": [
+            "endif.2"
+          ],
+          "op": "jmp"
+        },
+        {
+          "label": "else.2"
+        },
+        {
+          "dest": "v12",
+          "op": "const",
+          "type": "int",
+          "value": 4
+        },
+        {
+          "args": [
+            "v12"
+          ],
+          "op": "print"
+        },
+        {
+          "dest": "v13",
+          "op": "const",
+          "type": "int",
+          "value": 0
+        },
+        {
+          "args": [
+            "b"
+          ],
+          "dest": "v15",
+          "op": "id",
+          "type": "bool"
+        },
+        {
+          "args": [
+            "v15"
+          ],
+          "labels": [
+            "then.14",
+            "else.14"
+          ],
+          "op": "br"
+        },
+        {
+          "label": "then.14"
+        },
+        {
+          "dest": "v16",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "v16"
+          ],
+          "op": "print"
+        },
+        {
+          "dest": "v17",
+          "op": "const",
+          "type": "int",
+          "value": 0
+        },
+        {
+          "labels": [
+            "endif.14"
+          ],
+          "op": "jmp"
+        },
+        {
+          "label": "else.14"
+        },
+        {
+          "dest": "v18",
+          "op": "const",
+          "type": "int",
+          "value": 6
+        },
+        {
+          "args": [
+            "v18"
+          ],
+          "op": "print"
+        },
+        {
+          "dest": "v19",
+          "op": "const",
+          "type": "int",
+          "value": 0
+        },
+        {
+          "label": "endif.14"
+        },
+        {
+          "label": "endif.2"
         }
       ],
       "name": "main"

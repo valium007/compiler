@@ -6,113 +6,16 @@
           "label": "entry"
         },
         {
-          "dest": "i",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "sum",
-          "op": "const",
-          "type": "int",
-          "value": 0
-        },
-        {
-          "dest": "prod",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "acc",
-          "op": "const",
-          "type": "int",
-          "value": 10
-        },
-        {
           "dest": "x",
           "op": "const",
           "type": "int",
-          "value": 200
-        },
-        {
-          "dest": "y",
-          "op": "const",
-          "type": "int",
-          "value": 50
-        },
-        {
-          "dest": "z",
-          "op": "const",
-          "type": "int",
           "value": 0
         },
         {
-          "dest": "flag",
-          "op": "const",
-          "type": "bool",
-          "value": true
-        },
-        {
-          "labels": [
-            "L1_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L1_cond"
-        },
-        {
-          "dest": "l1_end",
+          "dest": "i",
           "op": "const",
           "type": "int",
-          "value": 20
-        },
-        {
-          "args": [
-            "i",
-            "l1_end"
-          ],
-          "dest": "c1",
-          "op": "gt",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "c1"
-          ],
-          "labels": [
-            "L2_init",
-            "L1_body"
-          ],
-          "op": "br"
-        },
-        {
-          "label": "L1_body"
-        },
-        {
-          "dest": "two",
-          "op": "const",
-          "type": "int",
-          "value": 2
-        },
-        {
-          "dest": "three",
-          "op": "const",
-          "type": "int",
-          "value": 3
-        },
-        {
-          "dest": "five",
-          "op": "const",
-          "type": "int",
-          "value": 5
-        },
-        {
-          "dest": "ten",
-          "op": "const",
-          "type": "int",
-          "value": 10
+          "value": 0
         },
         {
           "dest": "one",
@@ -121,93 +24,101 @@
           "value": 1
         },
         {
-          "args": [
-            "i",
-            "two"
+          "labels": [
+            "loop"
           ],
-          "dest": "t1",
-          "op": "mul",
-          "type": "int"
+          "op": "jmp"
         },
         {
-          "args": [
-            "sum",
-            "t1"
-          ],
-          "dest": "t2",
-          "op": "add",
-          "type": "int"
+          "label": "loop"
         },
         {
-          "args": [
-            "t2",
-            "three"
-          ],
-          "dest": "sum",
-          "op": "add",
-          "type": "int"
+          "dest": "max",
+          "op": "const",
+          "type": "int",
+          "value": 10
         },
         {
           "args": [
             "i",
-            "one"
+            "max"
           ],
-          "dest": "p1",
-          "op": "add",
-          "type": "int"
+          "dest": "cond",
+          "op": "lt",
+          "type": "bool"
         },
         {
           "args": [
-            "prod",
-            "p1"
+            "cond"
           ],
-          "dest": "prod",
-          "op": "mul",
-          "type": "int"
+          "labels": [
+            "body",
+            "exit"
+          ],
+          "op": "br"
+        },
+        {
+          "label": "body"
+        },
+        {
+          "dest": "mid",
+          "op": "const",
+          "type": "int",
+          "value": 5
         },
         {
           "args": [
-            "prod",
-            "five"
+            "i",
+            "mid"
           ],
-          "dest": "d1",
-          "op": "div",
-          "type": "int"
+          "dest": "cond",
+          "op": "lt",
+          "type": "bool"
         },
         {
           "args": [
-            "acc",
-            "d1"
+            "cond"
           ],
-          "dest": "acc",
-          "op": "add",
-          "type": "int"
+          "labels": [
+            "then",
+            "endif"
+          ],
+          "op": "br"
         },
         {
-          "args": [
-            "acc",
-            "ten"
-          ],
-          "dest": "acc",
-          "op": "sub",
-          "type": "int"
+          "label": "then"
         },
         {
           "args": [
             "x",
-            "i"
+            "one"
           ],
           "dest": "x",
-          "op": "sub",
+          "op": "add",
           "type": "int"
         },
         {
-          "args": [
-            "y",
-            "two"
+          "labels": [
+            "endif"
           ],
-          "dest": "y",
-          "op": "add",
+          "op": "jmp"
+        },
+        {
+          "label": "endif"
+        },
+        {
+          "dest": "factor",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "x",
+            "factor"
+          ],
+          "dest": "x",
+          "op": "mul",
           "type": "int"
         },
         {
@@ -221,823 +132,16 @@
         },
         {
           "labels": [
-            "L1_cond"
+            "loop"
           ],
           "op": "jmp"
         },
         {
-          "label": "L2_init"
-        },
-        {
-          "dest": "j",
-          "op": "const",
-          "type": "int",
-          "value": 0
-        },
-        {
-          "dest": "k",
-          "op": "const",
-          "type": "int",
-          "value": 30
-        },
-        {
-          "dest": "m",
-          "op": "const",
-          "type": "int",
-          "value": 7
-        },
-        {
-          "dest": "n",
-          "op": "const",
-          "type": "int",
-          "value": 3
-        },
-        {
-          "labels": [
-            "L2_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L2_cond"
-        },
-        {
-          "dest": "l2_end",
-          "op": "const",
-          "type": "int",
-          "value": 40
-        },
-        {
-          "args": [
-            "j",
-            "l2_end"
-          ],
-          "dest": "c2",
-          "op": "ge",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "c2"
-          ],
-          "labels": [
-            "L3_init",
-            "L2_body"
-          ],
-          "op": "br"
-        },
-        {
-          "label": "L2_body"
-        },
-        {
-          "dest": "one2",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "two2",
-          "op": "const",
-          "type": "int",
-          "value": 2
-        },
-        {
-          "dest": "four2",
-          "op": "const",
-          "type": "int",
-          "value": 4
-        },
-        {
-          "dest": "six2",
-          "op": "const",
-          "type": "int",
-          "value": 6
-        },
-        {
-          "dest": "nine2",
-          "op": "const",
-          "type": "int",
-          "value": 9
-        },
-        {
-          "args": [
-            "j",
-            "two2"
-          ],
-          "dest": "a1",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "k",
-            "a1"
-          ],
-          "dest": "a2",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "a2",
-            "m"
-          ],
-          "dest": "a3",
-          "op": "sub",
-          "type": "int"
-        },
-        {
-          "args": [
-            "a3",
-            "two2"
-          ],
-          "dest": "a4",
-          "op": "div",
-          "type": "int"
-        },
-        {
-          "args": [
-            "a4",
-            "n"
-          ],
-          "dest": "k",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "m",
-            "four2"
-          ],
-          "dest": "b1",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "b1",
-            "j"
-          ],
-          "dest": "b2",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "b2",
-            "two2"
-          ],
-          "dest": "b3",
-          "op": "div",
-          "type": "int"
-        },
-        {
-          "args": [
-            "b3",
-            "one2"
-          ],
-          "dest": "m",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "n",
-            "six2"
-          ],
-          "dest": "n1",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "n1",
-            "two2"
-          ],
-          "dest": "n2",
-          "op": "div",
-          "type": "int"
-        },
-        {
-          "args": [
-            "n2",
-            "one2"
-          ],
-          "dest": "n",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "k",
-            "m"
-          ],
-          "dest": "cmp1",
-          "op": "lt",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "n",
-            "nine2"
-          ],
-          "dest": "cmp2",
-          "op": "gt",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "cmp1",
-            "cmp2"
-          ],
-          "dest": "both",
-          "op": "and",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "both"
-          ],
-          "dest": "inv",
-          "op": "not",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "flag",
-            "inv"
-          ],
-          "dest": "flag",
-          "op": "or",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "z",
-            "k"
-          ],
-          "dest": "z1",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "z1",
-            "m"
-          ],
-          "dest": "z2",
-          "op": "sub",
-          "type": "int"
-        },
-        {
-          "args": [
-            "z2",
-            "n"
-          ],
-          "dest": "z",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "sum",
-            "j"
-          ],
-          "dest": "sum",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "prod",
-            "k"
-          ],
-          "dest": "prod",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "j",
-            "one2"
-          ],
-          "dest": "j",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "labels": [
-            "L2_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L3_init"
-        },
-        {
-          "dest": "p",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "outer_acc",
-          "op": "const",
-          "type": "int",
-          "value": 0
-        },
-        {
-          "labels": [
-            "L3_outer_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L3_outer_cond"
-        },
-        {
-          "dest": "p_end",
-          "op": "const",
-          "type": "int",
-          "value": 8
-        },
-        {
-          "args": [
-            "p",
-            "p_end"
-          ],
-          "dest": "c3o",
-          "op": "gt",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "c3o"
-          ],
-          "labels": [
-            "L4_init",
-            "L3_outer_body_init"
-          ],
-          "op": "br"
-        },
-        {
-          "label": "L3_outer_body_init"
-        },
-        {
-          "dest": "q",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "inner_acc",
-          "op": "const",
-          "type": "int",
-          "value": 0
-        },
-        {
-          "labels": [
-            "L3_inner_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L3_inner_cond"
-        },
-        {
-          "dest": "q_end",
-          "op": "const",
-          "type": "int",
-          "value": 12
-        },
-        {
-          "args": [
-            "q",
-            "q_end"
-          ],
-          "dest": "c3i",
-          "op": "gt",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "c3i"
-          ],
-          "labels": [
-            "L3_inner_done",
-            "L3_inner_body"
-          ],
-          "op": "br"
-        },
-        {
-          "label": "L3_inner_body"
-        },
-        {
-          "dest": "one3",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "two3",
-          "op": "const",
-          "type": "int",
-          "value": 2
-        },
-        {
-          "dest": "three3",
-          "op": "const",
-          "type": "int",
-          "value": 3
-        },
-        {
-          "args": [
-            "p",
-            "q"
-          ],
-          "dest": "u1",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "u1",
-            "three3"
-          ],
-          "dest": "u2",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "u2",
-            "two3"
-          ],
-          "dest": "u3",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "u3",
-            "two3"
-          ],
-          "dest": "u4",
-          "op": "div",
-          "type": "int"
-        },
-        {
-          "args": [
-            "u4",
-            "q"
-          ],
-          "dest": "u5",
-          "op": "sub",
-          "type": "int"
-        },
-        {
-          "args": [
-            "u5",
-            "p"
-          ],
-          "dest": "u6",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "inner_acc",
-            "u6"
-          ],
-          "dest": "inner_acc",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "q",
-            "one3"
-          ],
-          "dest": "q",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "labels": [
-            "L3_inner_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L3_inner_done"
-        },
-        {
-          "args": [
-            "outer_acc",
-            "inner_acc"
-          ],
-          "dest": "outer_acc",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "dest": "p_one",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "args": [
-            "p",
-            "p_one"
-          ],
-          "dest": "p",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "labels": [
-            "L3_outer_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L4_init"
-        },
-        {
-          "dest": "r",
-          "op": "const",
-          "type": "int",
-          "value": 100
-        },
-        {
-          "dest": "s",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "t",
-          "op": "const",
-          "type": "int",
-          "value": 0
-        },
-        {
-          "labels": [
-            "L4_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "L4_cond"
-        },
-        {
-          "dest": "zero4",
-          "op": "const",
-          "type": "int",
-          "value": 0
-        },
-        {
-          "args": [
-            "r",
-            "zero4"
-          ],
-          "dest": "c4",
-          "op": "gt",
-          "type": "bool"
-        },
-        {
-          "args": [
-            "c4"
-          ],
-          "labels": [
-            "L4_body",
-            "finish"
-          ],
-          "op": "br"
-        },
-        {
-          "label": "L4_body"
-        },
-        {
-          "dest": "one4",
-          "op": "const",
-          "type": "int",
-          "value": 1
-        },
-        {
-          "dest": "two4",
-          "op": "const",
-          "type": "int",
-          "value": 2
-        },
-        {
-          "dest": "five4",
-          "op": "const",
-          "type": "int",
-          "value": 5
-        },
-        {
-          "dest": "ten4",
-          "op": "const",
-          "type": "int",
-          "value": 10
-        },
-        {
-          "args": [
-            "s",
-            "two4"
-          ],
-          "dest": "s1",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s1",
-            "r"
-          ],
-          "dest": "s2",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s2",
-            "five4"
-          ],
-          "dest": "s3",
-          "op": "div",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s3",
-            "one4"
-          ],
-          "dest": "s",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "t",
-            "s"
-          ],
-          "dest": "t1",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "t1",
-            "ten4"
-          ],
-          "dest": "t2",
-          "op": "sub",
-          "type": "int"
-        },
-        {
-          "args": [
-            "t2",
-            "r"
-          ],
-          "dest": "t",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "r",
-            "one4"
-          ],
-          "dest": "r",
-          "op": "sub",
-          "type": "int"
-        },
-        {
-          "labels": [
-            "L4_cond"
-          ],
-          "op": "jmp"
-        },
-        {
-          "label": "finish"
-        },
-        {
-          "args": [
-            "sum",
-            "prod"
-          ],
-          "dest": "final1",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "final1",
-            "acc"
-          ],
-          "dest": "final2",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "final2",
-            "x"
-          ],
-          "dest": "final3",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "final3",
-            "y"
-          ],
-          "dest": "final4",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "final4",
-            "z"
-          ],
-          "dest": "final5",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "final5",
-            "outer_acc"
-          ],
-          "dest": "final6",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "final6",
-            "t"
-          ],
-          "dest": "final7",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "sum"
-          ],
-          "op": "print"
-        },
-        {
-          "args": [
-            "prod"
-          ],
-          "op": "print"
-        },
-        {
-          "args": [
-            "acc"
-          ],
-          "op": "print"
+          "label": "exit"
         },
         {
           "args": [
             "x"
-          ],
-          "op": "print"
-        },
-        {
-          "args": [
-            "y"
-          ],
-          "op": "print"
-        },
-        {
-          "args": [
-            "z"
-          ],
-          "op": "print"
-        },
-        {
-          "args": [
-            "outer_acc"
-          ],
-          "op": "print"
-        },
-        {
-          "args": [
-            "t"
-          ],
-          "op": "print"
-        },
-        {
-          "args": [
-            "final7"
           ],
           "op": "print"
         }

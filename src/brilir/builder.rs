@@ -79,6 +79,10 @@ impl Builder {
         self.blocks.last_mut().unwrap()
     }
 
+    pub fn get_current_block_mut(&mut self) -> &mut BasicBlock {
+        self.blocks.last_mut().unwrap()
+    }
+
     pub fn add_instr(&mut self, instr: IrInstruction) {
         self.blocks.last_mut().unwrap().instrs.push(instr);
     }

@@ -1,209 +1,31 @@
 @main {
 .entry:
-  i: int = const 1;
-  sum: int = const 0;
-  prod: int = const 1;
-  acc: int = const 10;
-  x: int = const 200;
-  y: int = const 50;
-  z: int = const 0;
-  flag: bool = const true;
-  jmp .L1_cond;
-
-# -------------------------------------------------
-# LOOP 1: i = 1..20
-# - mixes add/sub/mul/div each iteration
-# -------------------------------------------------
-.L1_cond:
-  l1_end: int = const 20;
-  c1: bool = gt i l1_end;              # stop when i > 20
-  br c1 .L2_init .L1_body;
-
-.L1_body:
-  two: int = const 2;
-  three: int = const 3;
-  five: int = const 5;
-  ten: int = const 10;
+  x: int = const 0;
+  i: int = const 0;
   one: int = const 1;
+  jmp .loop;
 
-  t1: int = mul i two;                 # 2i
-  t2: int = add sum t1;                # sum += 2i
-  sum: int = add t2 three;             # sum += 3
+.loop:
+  max: int = const 10;
+  cond: bool = lt i max;
+  br cond .body .exit;
 
-  p1: int = add i one;                 # i+1
-  prod: int = mul prod p1;             # prod *= (i+1)
+.body:
+  mid: int = const 5;
+  cond: bool = lt i mid;
+  br cond .then .endif;
 
-  d1: int = div prod five;             # prod/5
-  acc: int = add acc d1;               # acc += prod/5
-  acc: int = sub acc ten;              # acc -= 10
+.then:
+  x: int = add x one;
+  jmp .endif;
 
-  # x,y drift
-  x: int = sub x i;
-  y: int = add y two;
+.endif:
+  factor: int = const 2;
+  x: int = mul x factor;
 
   i: int = add i one;
-  jmp .L1_cond;
+  jmp .loop;
 
-# -------------------------------------------------
-# LOOP 2 init
-# -------------------------------------------------
-.L2_init:
-  j: int = const 0;
-  k: int = const 30;
-  m: int = const 7;
-  n: int = const 3;
-  jmp .L2_cond;
-
-# -------------------------------------------------
-# LOOP 2: j = 0..39
-# - boolean logic with and/or/not
-# -------------------------------------------------
-.L2_cond:
-  l2_end: int = const 40;
-  c2: bool = ge j l2_end;              # stop when j >= 40
-  br c2 .L3_init .L2_body;
-
-.L2_body:
-  one2: int = const 1;
-  two2: int = const 2;
-  four2: int = const 4;
-  six2: int = const 6;
-  nine2: int = const 9;
-
-  # arithmetic churn
-  a1: int = mul j two2;
-  a2: int = add k a1;
-  a3: int = sub a2 m;
-  a4: int = div a3 two2;               # safe divisor
-  k: int = add a4 n;
-
-  b1: int = mul m four2;
-  b2: int = add b1 j;
-  b3: int = div b2 two2;
-  m: int = add b3 one2;
-
-  n1: int = add n six2;
-  n2: int = div n1 two2;
-  n: int = add n2 one2;
-
-  # bool logic
-  cmp1: bool = lt k m;
-  cmp2: bool = gt n nine2;
-  both: bool = and cmp1 cmp2;
-  inv: bool = not both;
-  flag: bool = or flag inv;
-
-  # feed z/sum/prod
-  z1: int = add z k;
-  z2: int = sub z1 m;
-  z: int = add z2 n;
-
-  sum: int = add sum j;
-  prod: int = add prod k;              # avoid huge multiplication blowup here
-
-  j: int = add j one2;
-  jmp .L2_cond;
-
-# -------------------------------------------------
-# LOOP 3 init (nested loops)
-# -------------------------------------------------
-.L3_init:
-  p: int = const 1;
-  outer_acc: int = const 0;
-  jmp .L3_outer_cond;
-
-# outer: p = 1..8
-.L3_outer_cond:
-  p_end: int = const 8;
-  c3o: bool = gt p p_end;              # stop when p > 8
-  br c3o .L4_init .L3_outer_body_init;
-
-.L3_outer_body_init:
-  q: int = const 1;
-  inner_acc: int = const 0;
-  jmp .L3_inner_cond;
-
-# inner: q = 1..12
-.L3_inner_cond:
-  q_end: int = const 12;
-  c3i: bool = gt q q_end;              # stop when q > 12
-  br c3i .L3_inner_done .L3_inner_body;
-
-.L3_inner_body:
-  one3: int = const 1;
-  two3: int = const 2;
-  three3: int = const 3;
-
-  u1: int = mul p q;
-  u2: int = add u1 three3;
-  u3: int = mul u2 two3;
-  u4: int = div u3 two3;               # exact undo
-  u5: int = sub u4 q;
-  u6: int = add u5 p;
-
-  inner_acc: int = add inner_acc u6;
-  q: int = add q one3;
-  jmp .L3_inner_cond;
-
-.L3_inner_done:
-  outer_acc: int = add outer_acc inner_acc;
-  p_one: int = const 1;
-  p: int = add p p_one;
-  jmp .L3_outer_cond;
-
-# -------------------------------------------------
-# LOOP 4 init
-# -------------------------------------------------
-.L4_init:
-  r: int = const 100;
-  s: int = const 1;
-  t: int = const 0;
-  jmp .L4_cond;
-
-# LOOP 4: while r > 0
-.L4_cond:
-  zero4: int = const 0;
-  c4: bool = gt r zero4;
-  br c4 .L4_body .finish;
-
-.L4_body:
-  one4: int = const 1;
-  two4: int = const 2;
-  five4: int = const 5;
-  ten4: int = const 10;
-
-  # arithmetic
-  s1: int = mul s two4;
-  s2: int = add s1 r;
-  s3: int = div s2 five4;
-  s: int = add s3 one4;
-
-  t1: int = add t s;
-  t2: int = sub t1 ten4;
-  t: int = add t2 r;
-
-  r: int = sub r one4;
-  jmp .L4_cond;
-
-# -------------------------------------------------
-# FINAL combine and print
-# -------------------------------------------------
-.finish:
-  final1: int = add sum prod;
-  final2: int = add final1 acc;
-  final3: int = add final2 x;
-  final4: int = add final3 y;
-  final5: int = add final4 z;
-  final6: int = add final5 outer_acc;
-  final7: int = add final6 t;
-
-  print sum;
-  print prod;
-  print acc;
+.exit:
   print x;
-  print y;
-  print z;
-  print outer_acc;
-  print t;
-  print final7;
-}
+} 

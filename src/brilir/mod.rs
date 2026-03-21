@@ -22,13 +22,15 @@ pub fn compile_bril() -> Result<Builder> {
     let mut instrs: Vec<Instruction> = Vec::new();
 
     let data = build_data(&program.functions[0].instrs)?;
-    println!("data: {:?}", data);
+
     instrs = std::mem::take(&mut program.functions[0].instrs);
     let mut builder = build_basic_blocks(instrs, data)?;
     build_edges(&mut builder);
+
     for block in builder.blocks.iter() {
         println!("{:?}", block);
     }
+
     builder.liveness = liveness::compute_liveness(&mut builder)?;
     Ok(builder)
 }
@@ -42,8 +44,13 @@ pub fn build_basic_blocks(
     for instr in instrs {
         match instr {
             Instruction::Label { label } => {
-                let bb_id = data.1.get(&label).unwrap();
-                builder.add_block(*bb_id);
+                let bb = data.1.get(&label).unwrap();
+
+                if builder.blocks.len() != 0 && builder.get_current_block_mut().instrs.is_empty() {
+                    builder.add_instr(IrInstruction::Jmp(*bb));
+                }
+
+                builder.add_block(*bb);
             }
 
             Instruction::Op(op) => match op {
@@ -357,26 +364,25 @@ pub fn build_basic_blocks(
             },
         }
     }
-    if let Some(last_block) = builder.blocks.last() {
-        if let Some(last_instr) = last_block.instrs.last() {
-            match last_instr {
-                IrInstruction::Ret(var) => {}
-                _ => {
-                    builder.add_instr(IrInstruction::Load(
-                        Variable {
-                            id: data.2,
-                            index: 0,
-                        },
-                        Immediate::Int(0),
-                    ));
-                    builder.add_instr(IrInstruction::Ret(Variable {
-                        id: data.2,
-                        index: 0,
-                    }));
-                }
-            }
-        }
+
+    let last_block = builder.blocks.last().unwrap();
+
+    if last_block.instrs.is_empty()
+        || !matches!(last_block.instrs.last().unwrap(), IrInstruction::Ret(_))
+    {
+        builder.add_instr(IrInstruction::Load(
+            Variable {
+                id: data.2,
+                index: 0,
+            },
+            Immediate::Int(0),
+        ));
+        builder.add_instr(IrInstruction::Ret(Variable {
+            id: data.2,
+            index: 0,
+        }));
     }
+
     Ok(builder)
 }
 

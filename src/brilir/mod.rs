@@ -1,8 +1,5 @@
 pub mod builder;
-pub mod id;
 pub mod instruction;
-pub mod liveness;
-pub use liveness::compute_liveness;
 
 use crate::{
     bril_frontend::{
@@ -31,7 +28,6 @@ pub fn compile_bril() -> Result<Builder> {
         println!("{:?}", block);
     }
 
-    builder.liveness = liveness::compute_liveness(&mut builder)?;
     Ok(builder)
 }
 
@@ -46,8 +42,17 @@ pub fn build_basic_blocks(
             Instruction::Label { label } => {
                 let bb = data.1.get(&label).unwrap();
 
-                if builder.blocks.len() != 0 && builder.get_current_block_mut().instrs.is_empty() {
-                    builder.add_instr(IrInstruction::Jmp(*bb));
+                if builder.blocks.len() != 0 {
+                    let last = builder.get_current_block_mut().instrs.last();
+                    let needs_jmp = !matches!(
+                        last,
+                        Some(IrInstruction::Jmp(_))
+                            | Some(IrInstruction::Br(_, _, _))
+                            | Some(IrInstruction::Ret(_))
+                    );
+                    if needs_jmp {
+                        builder.add_instr(IrInstruction::Jmp(*bb));
+                    }
                 }
 
                 builder.add_block(*bb);
@@ -58,19 +63,13 @@ pub fn build_basic_blocks(
                     if typ == "int" {
                         let dest = data.0.get(&dest).unwrap();
                         builder.add_instr(IrInstruction::Load(
-                            Variable {
-                                id: *dest,
-                                index: 0,
-                            },
+                            Variable(*dest),
                             Immediate::Int(value.as_int()?),
                         ));
                     } else if typ == "bool" {
                         let dest = data.0.get(&dest).unwrap();
                         builder.add_instr(IrInstruction::Load(
-                            Variable {
-                                id: *dest,
-                                index: 0,
-                            },
+                            Variable(*dest),
                             Immediate::Bool(value.as_bool()?),
                         ));
                     }
@@ -79,13 +78,7 @@ pub fn build_basic_blocks(
                 Op::Id { dest, args, typ: _ } => {
                     let src = data.0.get(&args[0]).unwrap();
                     let dest = data.0.get(&dest).unwrap();
-                    builder.add_instr(IrInstruction::Mov(
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable { id: *src, index: 0 },
-                    ));
+                    builder.add_instr(IrInstruction::Mov(Variable(*dest), Variable(*src)));
                 }
 
                 Op::Add { dest, args, typ: _ } => {
@@ -94,18 +87,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Add,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -115,18 +99,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Sub,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -136,18 +111,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Mul,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -157,18 +123,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Div,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -178,18 +135,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Eq,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -199,18 +147,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Lt,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -220,18 +159,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Le,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -241,18 +171,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Gt,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -262,18 +183,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Ge,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -283,18 +195,9 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::And,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
@@ -304,36 +207,21 @@ pub fn build_basic_blocks(
                         args.iter().map(|arg| *data.0.get(arg).unwrap()).collect();
                     builder.add_instr(IrInstruction::Binary(
                         BinaryOp::Or,
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[0],
-                            index: 0,
-                        },
-                        Variable {
-                            id: arg_ids[1],
-                            index: 0,
-                        },
+                        Variable(*dest),
+                        Variable(arg_ids[0]),
+                        Variable(arg_ids[1]),
                     ));
                 }
 
                 Op::Not { dest, args } => {
                     let dest = data.0.get(&dest).unwrap();
                     let src = data.0.get(&args[0]).unwrap();
-                    builder.add_instr(IrInstruction::Not(
-                        Variable {
-                            id: *dest,
-                            index: 0,
-                        },
-                        Variable { id: *src, index: 0 },
-                    ));
+                    builder.add_instr(IrInstruction::Not(Variable(*dest), Variable(*src)));
                 }
 
                 Op::Print { args } => {
                     let src = data.0.get(&args[0]).unwrap();
-                    builder.add_instr(IrInstruction::Print(Variable { id: *src, index: 0 }));
+                    builder.add_instr(IrInstruction::Print(Variable(*src)));
                 }
 
                 Op::Jmp { labels } => {
@@ -348,7 +236,7 @@ pub fn build_basic_blocks(
                         .map(|label| *data.1.get(label).unwrap())
                         .collect();
                     builder.add_instr(IrInstruction::Br(
-                        Variable { id: *src, index: 0 },
+                        Variable(*src),
                         block_ids[0],
                         block_ids[1],
                     ))
@@ -356,7 +244,7 @@ pub fn build_basic_blocks(
 
                 Op::Ret { args } => {
                     let src = data.0.get(&args[0]).unwrap();
-                    builder.add_instr(IrInstruction::Ret(Variable { id: *src, index: 0 }));
+                    builder.add_instr(IrInstruction::Ret(Variable(*src)));
                 }
 
                 Op::Nop => {}
@@ -370,17 +258,13 @@ pub fn build_basic_blocks(
     if last_block.instrs.is_empty()
         || !matches!(last_block.instrs.last().unwrap(), IrInstruction::Ret(_))
     {
-        builder.add_instr(IrInstruction::Load(
-            Variable {
-                id: data.2,
-                index: 0,
-            },
-            Immediate::Int(0),
-        ));
-        builder.add_instr(IrInstruction::Ret(Variable {
-            id: data.2,
-            index: 0,
-        }));
+        builder.add_instr(IrInstruction::Load(Variable(data.2), Immediate::Int(0)));
+        builder.add_instr(IrInstruction::Ret(Variable(data.2)));
+        // data.2 was consumed as a variable, so next free id is data.2 + 1
+        builder.next_var_id = data.2 + 1;
+    } else {
+        // No synthetic ret added; data.2 is already the next free id
+        builder.next_var_id = data.2;
     }
 
     Ok(builder)

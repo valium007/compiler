@@ -11,9 +11,6 @@ pub struct BasicBlock {
     pub instrs: Vec<IrInstruction>,
     pub successors: HashSet<BasicBlockId>,
     pub predecessors: HashSet<BasicBlockId>,
-    pub defs: HashSet<Variable>,
-    pub uses: HashSet<Variable>,
-    pub phis: Vec<Phi>,
 }
 
 impl Debug for BasicBlock {
@@ -24,9 +21,6 @@ impl Debug for BasicBlock {
             "bb_{} succs: {:?} preds: {:?}",
             self.id, self.successors, self.predecessors
         );
-        for phi in self.phis.iter() {
-            writeln!(f, "  {:?}", phi);
-        }
         for instr in self.instrs.iter() {
             writeln!(f, "  {:?}", instr);
         }
@@ -53,9 +47,6 @@ impl BasicBlock {
             instrs: Vec::new(),
             successors: HashSet::new(),
             predecessors: HashSet::new(),
-            defs: HashSet::new(),
-            uses: HashSet::new(),
-            phis: Vec::new(),
         }
     }
 }
@@ -63,6 +54,7 @@ impl BasicBlock {
 pub struct Builder {
     pub blocks: Vec<BasicBlock>,
     pub liveness: (Vec<HashSet<Variable>>, Vec<HashSet<Variable>>),
+    pub next_var_id: usize,
 }
 
 impl Builder {
@@ -70,6 +62,7 @@ impl Builder {
         Self {
             blocks: Vec::new(),
             liveness: (Vec::new(), Vec::new()),
+            next_var_id: 0,
         }
     }
 

@@ -8,7 +8,7 @@ use crate::{
     },
     brilir::{
         builder::Builder,
-        instruction::{BinaryOp, Immediate, IrInstruction, Variable},
+        instruction::{BinaryOp, Value, IrInstruction, Variable},
     },
 };
 use anyhow::Result;
@@ -64,13 +64,13 @@ pub fn build_basic_blocks(
                         let dest = data.0.get(&dest).unwrap();
                         builder.add_instr(IrInstruction::Load(
                             Variable(*dest),
-                            Immediate::Int(value.as_int()?),
+                            Value::Int(value.as_int()?),
                         ));
                     } else if typ == "bool" {
                         let dest = data.0.get(&dest).unwrap();
                         builder.add_instr(IrInstruction::Load(
                             Variable(*dest),
-                            Immediate::Bool(value.as_bool()?),
+                            Value::Bool(value.as_bool()?),
                         ));
                     }
                 }
@@ -258,7 +258,7 @@ pub fn build_basic_blocks(
     if last_block.instrs.is_empty()
         || !matches!(last_block.instrs.last().unwrap(), IrInstruction::Ret(_))
     {
-        builder.add_instr(IrInstruction::Load(Variable(data.2), Immediate::Int(0)));
+        builder.add_instr(IrInstruction::Load(Variable(data.2), Value::Int(0)));
         builder.add_instr(IrInstruction::Ret(Variable(data.2)));
         // data.2 was consumed as a variable, so next free id is data.2 + 1
         builder.next_var_id = data.2 + 1;

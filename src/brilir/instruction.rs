@@ -6,16 +6,16 @@ pub type BasicBlockId = usize;
 pub struct Variable(pub usize);
 
 #[derive(Copy, Clone, Eq, PartialEq, PartialOrd, Ord, Hash)]
-pub enum Immediate {
+pub enum Value {
     Int(i64),
     Bool(bool),
 }
 
-impl Debug for Immediate {
+impl Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Immediate::Int(i) => write!(f, "{}", i),
-            Immediate::Bool(b) => write!(f, "{}", b),
+            Value::Int(i) => write!(f, "{}", i),
+            Value::Bool(b) => write!(f, "{}", b),
         }
     }
 }
@@ -37,7 +37,7 @@ pub enum BinaryOp {
 
 #[derive(Clone, Eq, PartialEq)]
 pub enum IrInstruction {
-    Load(Variable, Immediate),
+    Load(Variable, Value),
     Mov(Variable, Variable),
     Binary(BinaryOp, Variable, Variable, Variable),
     Not(Variable, Variable),

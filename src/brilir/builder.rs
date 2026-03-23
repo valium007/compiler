@@ -1,9 +1,7 @@
 use crate::brilir::instruction::IrInstruction;
-use crate::brilir::instruction::Variable;
+use crate::brilir::instruction::{Variable,BasicBlockId};
 use hashbrown::HashSet;
 use std::fmt::Debug;
-
-pub type BasicBlockId = usize;
 
 #[derive(Clone)]
 pub struct BasicBlock {
@@ -25,18 +23,6 @@ impl Debug for BasicBlock {
             writeln!(f, "  {:?}", instr);
         }
         write!(f, "")
-    }
-}
-
-#[derive(Clone, Eq, PartialEq)]
-pub struct Phi {
-    pub var: Variable,
-    pub operands: Vec<(Variable, BasicBlockId)>,
-}
-
-impl Debug for Phi {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?} = phi {:?}", self.var, self.operands)
     }
 }
 

@@ -3,7 +3,7 @@ use crate::brilir;
 
 use brilir::builder::Builder as BrilBuilder;
 use brilir::instruction::{
-    BinaryOp as BrilBinaryOp, Immediate, IrInstruction as BrilIrInstruction, Variable,
+    BinaryOp as BrilBinaryOp, Value, IrInstruction as BrilIrInstruction, Variable,
 };
 use ir::Builder;
 use ir::{BinaryOp as SsaBinaryOp, IrInstruction, SsaValue};
@@ -26,10 +26,10 @@ fn convert_binary_op(op: BrilBinaryOp) -> SsaBinaryOp {
 }
 
 /// Convert a brilir Immediate to an SsaValue (Int or Bool).
-fn immediate_to_ssa_value(imm: Immediate) -> SsaValue {
+fn immediate_to_ssa_value(imm: Value) -> SsaValue {
     match imm {
-        Immediate::Int(i) => SsaValue::Int(i),
-        Immediate::Bool(b) => SsaValue::Bool(b),
+        Value::Int(i) => SsaValue::Int(i),
+        Value::Bool(b) => SsaValue::Bool(b),
     }
 }
 

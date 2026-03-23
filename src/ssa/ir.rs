@@ -24,7 +24,6 @@ pub enum SsaValue {
     Var(SsaVariable),
     Int(i64),
     Bool(bool),
-    Phi(Phi),
     Undef,
 }
 
@@ -34,7 +33,6 @@ impl Debug for SsaValue {
             SsaValue::Var(v) => write!(f, "{:?}", v),
             SsaValue::Int(i) => write!(f, "{}", i),
             SsaValue::Bool(b) => write!(f, "{}", b),
-            SsaValue::Phi(p) => write!(f, "{:?}", p),
             SsaValue::Undef => write!(f, "undef"),
         }
     }

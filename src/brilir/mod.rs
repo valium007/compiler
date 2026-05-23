@@ -17,28 +17,22 @@ use crate::{
 use anyhow::Result;
 use hashbrown::HashMap;
 
+type BuildData = (HashMap<String, usize>, HashMap<String, usize>, usize);
+
 pub fn compile_bril() -> Result<Builder> {
     let mut program = bril_frontend::parse_json()?;
-    let mut instrs: Vec<Instruction> = Vec::new();
 
     let data = build_data(&program.functions[0].instrs)?;
 
-    instrs = std::mem::take(&mut program.functions[0].instrs);
+    let instrs = std::mem::take(&mut program.functions[0].instrs);
     let mut builder = build_basic_blocks(instrs, data)?;
     build_edges(&mut builder);
-
-    for block in builder.blocks.iter() {
-        println!("{:?}", block);
-    }
 
     builder.liveness = liveness::compute_liveness(&mut builder)?;
     Ok(builder)
 }
 
-pub fn build_basic_blocks(
-    instrs: Vec<Instruction>,
-    data: (HashMap<String, usize>, HashMap<String, usize>, usize),
-) -> Result<Builder> {
+pub fn build_basic_blocks(instrs: Vec<Instruction>, data: BuildData) -> Result<Builder> {
     let mut builder = builder::Builder::new();
 
     for instr in instrs {
@@ -46,7 +40,7 @@ pub fn build_basic_blocks(
             Instruction::Label { label } => {
                 let bb = data.1.get(&label).unwrap();
 
-                if builder.blocks.len() != 0 && builder.get_current_block_mut().instrs.is_empty() {
+                if !builder.blocks.is_empty() && builder.get_current_block_mut().instrs.is_empty() {
                     builder.add_instr(IrInstruction::Jmp(*bb));
                 }
 
@@ -386,9 +380,7 @@ pub fn build_basic_blocks(
     Ok(builder)
 }
 
-pub fn build_data(
-    instrs: &Vec<Instruction>,
-) -> Result<(HashMap<String, usize>, HashMap<String, usize>, usize)> {
+pub fn build_data(instrs: &[Instruction]) -> Result<BuildData> {
     let mut next_variable_id = 0usize;
     let mut next_block_id = 0usize;
 

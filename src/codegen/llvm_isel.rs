@@ -1,7 +1,10 @@
+use anyhow::Result;
+
 use crate::brilir::{
-    builder::{BasicBlock, Builder},
-    instruction::{BinaryOp, Immediate, IrInstruction},
+    builder::{BasicBlock, BasicBlockId, Builder},
+    instruction::{BinaryOp, Immediate, IrInstruction, Variable},
 };
+use crate::codegen::future_active::RegisterAllocation;
 
 fn imm_to_llvm_int(imm: &Immediate) -> String {
     match imm {
@@ -16,148 +19,156 @@ fn imm_to_llvm_int(imm: &Immediate) -> String {
     }
 }
 
-fn imm_to_llvm_i1(imm: &Immediate) -> String {
-    match imm {
-        Immediate::Bool(b) => {
-            if *b {
-                "1".to_string()
-            } else {
-                "0".to_string()
-            }
-        }
-        Immediate::Int(i) => {
-            if *i == 0 {
-                "0".to_string()
-            } else {
-                "1".to_string()
-            }
-        }
-    }
-}
-
-pub fn emit_llvm_ir(builder: &Builder) -> String {
+pub fn emit_llvm_ir(builder: &Builder, allocation: &RegisterAllocation) -> Result<String> {
     let mut out = String::new();
 
     out.push_str("@formatString = private constant [6 x i8] c\"%lld\\0A\\00\"\n");
     out.push_str("declare i32 @printf(ptr, ...)\n\n");
 
     out.push_str("define i32 @main() {\n");
+    out.push_str("entry:\n");
+    for reg in 0..allocation.register_count() {
+        out.push_str(&format!("  %r{} = alloca i64\n", reg));
+    }
+    out.push_str("  br label %bb_0\n");
 
     for block in builder.blocks.iter() {
-        emit_block(block, &mut out);
+        emit_block(builder, block, allocation, &mut out)?;
     }
 
     out.push_str("}\n");
-    out
+    Ok(out)
 }
 
-fn emit_block(block: &BasicBlock, out: &mut String) {
+fn emit_block(
+    builder: &Builder,
+    block: &BasicBlock,
+    allocation: &RegisterAllocation,
+    out: &mut String,
+) -> Result<()> {
     out.push_str(&format!("bb_{}:\n", block.id));
 
-    for phi in block.phis.iter() {
-        let var = format!("%v{}_{}", phi.var.id, phi.var.index);
-        let operands: Vec<String> = phi
-            .operands
-            .iter()
-            .map(|(v, pred)| format!("[ %v{}_{}, %bb_{} ]", v.id, v.index, pred))
-            .collect();
-
-        // NOTE:
-        // If your IR tracks types per variable, switch this to i1 for bool vars.
-        // For now we keep i64 to match existing pipeline expectations.
-        out.push_str(&format!("  {} = phi i64 {}\n", var, operands.join(", ")));
-    }
-
-    for instr in block.instrs.iter() {
+    for (instr_index, instr) in block.instrs.iter().enumerate() {
         match instr {
             IrInstruction::Load(dst, imm) => {
-                // Keep values in i64 domain for now.
-                out.push_str(&format!(
-                    "  %v{}_{} = add i64 0, {}\n",
-                    dst.id,
-                    dst.index,
-                    imm_to_llvm_int(imm)
-                ));
+                store_var(out, allocation, *dst, &imm_to_llvm_int(imm))?;
             }
 
             IrInstruction::Mov(dst, src) => {
-                out.push_str(&format!(
-                    "  %v{}_{} = add i64 0, %v{}_{}\n",
-                    dst.id, dst.index, src.id, src.index
-                ));
+                let src_value = load_var(
+                    out,
+                    allocation,
+                    *src,
+                    &format!("mov_src_{}_{}", block.id, instr_index),
+                )?;
+                store_var(out, allocation, *dst, &src_value)?;
             }
 
             IrInstruction::Binary(op, dst, lhs, rhs) => {
+                let lhs_value = load_var(
+                    out,
+                    allocation,
+                    *lhs,
+                    &format!("bin_lhs_{}_{}", block.id, instr_index),
+                )?;
+                let rhs_value = load_var(
+                    out,
+                    allocation,
+                    *rhs,
+                    &format!("bin_rhs_{}_{}", block.id, instr_index),
+                )?;
                 let opcode = binary_opcode(op);
-                let dst_s = format!("%v{}_{}", dst.id, dst.index);
-                let lhs_s = format!("%v{}_{}", lhs.id, lhs.index);
-                let rhs_s = format!("%v{}_{}", rhs.id, rhs.index);
 
                 match op {
                     BinaryOp::Eq | BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                        let tmp = format!("%cmp_{}_{}_{}", dst.id, dst.index, block.id);
+                        let cmp = format!("%cmp_{}_{}", block.id, instr_index);
+                        let zext = format!("%cmp_i64_{}_{}", block.id, instr_index);
                         out.push_str(&format!(
                             "  {} = icmp {} i64 {}, {}\n",
-                            tmp, opcode, lhs_s, rhs_s
+                            cmp, opcode, lhs_value, rhs_value
                         ));
-                        out.push_str(&format!("  {} = zext i1 {} to i64\n", dst_s, tmp));
+                        out.push_str(&format!("  {} = zext i1 {} to i64\n", zext, cmp));
+                        store_var(out, allocation, *dst, &zext)?;
                     }
                     _ => {
+                        let result = format!("%bin_{}_{}", block.id, instr_index);
                         out.push_str(&format!(
                             "  {} = {} i64 {}, {}\n",
-                            dst_s, opcode, lhs_s, rhs_s
+                            result, opcode, lhs_value, rhs_value
                         ));
+                        store_var(out, allocation, *dst, &result)?;
                     }
                 }
             }
 
             IrInstruction::Not(dst, src) => {
-                let tmp = format!("%not_tmp_{}_{}_{}", dst.id, dst.index, block.id);
-                out.push_str(&format!(
-                    "  {} = icmp eq i64 %v{}_{}, 0\n",
-                    tmp, src.id, src.index
-                ));
-                out.push_str(&format!(
-                    "  %v{}_{} = zext i1 {} to i64\n",
-                    dst.id, dst.index, tmp
-                ));
+                let src_value = load_var(
+                    out,
+                    allocation,
+                    *src,
+                    &format!("not_src_{}_{}", block.id, instr_index),
+                )?;
+                let cmp = format!("%not_cmp_{}_{}", block.id, instr_index);
+                let zext = format!("%not_i64_{}_{}", block.id, instr_index);
+                out.push_str(&format!("  {} = icmp eq i64 {}, 0\n", cmp, src_value));
+                out.push_str(&format!("  {} = zext i1 {} to i64\n", zext, cmp));
+                store_var(out, allocation, *dst, &zext)?;
             }
 
             IrInstruction::Print(src) => {
-                let vid = src.id;
-                let vidx = src.index;
-                let bid = block.id;
+                let src_value = load_var(
+                    out,
+                    allocation,
+                    *src,
+                    &format!("print_src_{}_{}", block.id, instr_index),
+                )?;
                 out.push_str(&format!(
-                    "  %fmt_ptr_{vid}_{vidx}_{bid} = getelementptr inbounds [6 x i8], ptr @formatString, i32 0, i32 0\n"
+                    "  %fmt_ptr_{}_{} = getelementptr inbounds [6 x i8], ptr @formatString, i32 0, i32 0\n",
+                    block.id, instr_index
                 ));
                 out.push_str(&format!(
-                    "  %print_ret_{vid}_{vidx}_{bid} = call i32 (ptr, ...) @printf(ptr %fmt_ptr_{vid}_{vidx}_{bid}, i64 %v{vid}_{vidx})\n"
+                    "  %print_ret_{}_{} = call i32 (ptr, ...) @printf(ptr %fmt_ptr_{}_{}, i64 {})\n",
+                    block.id, instr_index, block.id, instr_index, src_value
                 ));
             }
 
             IrInstruction::Jmp(target) => {
+                emit_phi_copies(builder, block.id, *target, allocation, out)?;
                 out.push_str(&format!("  br label %bb_{}\n", target));
             }
 
             IrInstruction::Br(cond, then_bb, else_bb) => {
-                let tmp = format!("%br_cond_{}_{}_{}", cond.id, cond.index, block.id);
+                let cond_value = load_var(
+                    out,
+                    allocation,
+                    *cond,
+                    &format!("br_src_{}_{}", block.id, instr_index),
+                )?;
+                let tmp = format!("%br_cond_{}_{}", block.id, instr_index);
+                out.push_str(&format!("  {} = icmp ne i64 {}, 0\n", tmp, cond_value));
+
+                let then_label = branch_target_label(builder, block.id, *then_bb);
+                let else_label = branch_target_label(builder, block.id, *else_bb);
                 out.push_str(&format!(
-                    "  {} = icmp ne i64 %v{}_{}, 0\n",
-                    tmp, cond.id, cond.index
+                    "  br i1 {}, label %{}, label %{}\n",
+                    tmp, then_label, else_label
                 ));
-                out.push_str(&format!(
-                    "  br i1 {}, label %bb_{}, label %bb_{}\n",
-                    tmp, then_bb, else_bb
-                ));
+
+                emit_conditional_edge_block(builder, block.id, *then_bb, allocation, out)?;
+                if else_bb != then_bb {
+                    emit_conditional_edge_block(builder, block.id, *else_bb, allocation, out)?;
+                }
             }
 
             IrInstruction::Ret(var) => {
-                // Return type of @main is i32. Truncate i64 SSA value.
-                let tmp = format!("%ret32_{}_{}_{}", var.id, var.index, block.id);
-                out.push_str(&format!(
-                    "  {} = trunc i64 %v{}_{} to i32\n",
-                    tmp, var.id, var.index
-                ));
+                let ret_value = load_var(
+                    out,
+                    allocation,
+                    *var,
+                    &format!("ret_src_{}_{}", block.id, instr_index),
+                )?;
+                let tmp = format!("%ret32_{}_{}", block.id, instr_index);
+                out.push_str(&format!("  {} = trunc i64 {} to i32\n", tmp, ret_value));
                 out.push_str(&format!("  ret i32 {}\n", tmp));
             }
 
@@ -165,18 +176,97 @@ fn emit_block(block: &BasicBlock, out: &mut String) {
         }
     }
 
-    let is_terminated = block.instrs.last().map_or(false, |i| {
+    let is_terminated = block.instrs.last().is_some_and(|i| {
         matches!(
             i,
             IrInstruction::Jmp(_) | IrInstruction::Br(..) | IrInstruction::Ret(_)
         )
     });
 
-    if !is_terminated {
-        if let Some(&succ) = block.successors.iter().next() {
-            out.push_str(&format!("  br label %bb_{}\n", succ));
+    if !is_terminated && let Some(&succ) = block.successors.iter().next() {
+        emit_phi_copies(builder, block.id, succ, allocation, out)?;
+        out.push_str(&format!("  br label %bb_{}\n", succ));
+    }
+
+    Ok(())
+}
+
+fn branch_target_label(builder: &Builder, pred: BasicBlockId, succ: BasicBlockId) -> String {
+    if builder.blocks[succ].phis.is_empty() {
+        format!("bb_{}", succ)
+    } else {
+        format!("bb_{}_to_{}", pred, succ)
+    }
+}
+
+fn emit_conditional_edge_block(
+    builder: &Builder,
+    pred: BasicBlockId,
+    succ: BasicBlockId,
+    allocation: &RegisterAllocation,
+    out: &mut String,
+) -> Result<()> {
+    if builder.blocks[succ].phis.is_empty() {
+        return Ok(());
+    }
+
+    out.push_str(&format!("bb_{}_to_{}:\n", pred, succ));
+    emit_phi_copies(builder, pred, succ, allocation, out)?;
+    out.push_str(&format!("  br label %bb_{}\n", succ));
+    Ok(())
+}
+
+fn emit_phi_copies(
+    builder: &Builder,
+    pred: BasicBlockId,
+    succ: BasicBlockId,
+    allocation: &RegisterAllocation,
+    out: &mut String,
+) -> Result<()> {
+    let mut copies = Vec::new();
+
+    for (phi_index, phi) in builder.blocks[succ].phis.iter().enumerate() {
+        if let Some((src, _)) = phi.operands.iter().find(|(_, block)| *block == pred) {
+            let src_reg = allocation.register(*src)?;
+            let dst_reg = allocation.register(phi.var)?;
+            if src_reg == dst_reg {
+                continue;
+            }
+
+            let tmp = format!("%phi_{}_{}_{}", pred, succ, phi_index);
+            out.push_str(&format!("  {} = load i64, ptr %r{}\n", tmp, src_reg));
+            copies.push((dst_reg, tmp));
         }
     }
+
+    for (dst_reg, tmp) in copies {
+        out.push_str(&format!("  store i64 {}, ptr %r{}\n", tmp, dst_reg));
+    }
+
+    Ok(())
+}
+
+fn load_var(
+    out: &mut String,
+    allocation: &RegisterAllocation,
+    var: Variable,
+    name: &str,
+) -> Result<String> {
+    let reg = allocation.register(var)?;
+    let tmp = format!("%{}", name);
+    out.push_str(&format!("  {} = load i64, ptr %r{}\n", tmp, reg));
+    Ok(tmp)
+}
+
+fn store_var(
+    out: &mut String,
+    allocation: &RegisterAllocation,
+    var: Variable,
+    value: &str,
+) -> Result<()> {
+    let reg = allocation.register(var)?;
+    out.push_str(&format!("  store i64 {}, ptr %r{}\n", value, reg));
+    Ok(())
 }
 
 fn binary_opcode(op: &BinaryOp) -> &'static str {

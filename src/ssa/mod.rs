@@ -5,12 +5,8 @@ use anyhow::Result;
 
 pub fn build_ssa(builder: &mut Builder) -> Result<()> {
     let df = compute_df(builder)?;
-    println!("df: {:?}", df);
     insert_phi(builder, df)?;
     run_rename(builder, 0)?;
-    for block in builder.blocks.iter() {
-        println!("{:?}", block);
-    }
 
     Ok(())
 }

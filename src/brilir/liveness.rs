@@ -3,9 +3,9 @@ use hashbrown::HashSet;
 
 use crate::brilir::{Builder, builder::BasicBlock, instruction::Variable};
 
-pub fn compute_liveness(
-    builder: &mut Builder,
-) -> Result<(Vec<HashSet<Variable>>, Vec<HashSet<Variable>>)> {
+pub type LiveSets = (Vec<HashSet<Variable>>, Vec<HashSet<Variable>>);
+
+pub fn compute_liveness(builder: &mut Builder) -> Result<LiveSets> {
     let n = builder.blocks.len();
 
     let mut live_out: Vec<HashSet<Variable>> = vec![HashSet::new(); n];
@@ -15,7 +15,6 @@ pub fn compute_liveness(
 
     for (i, block) in builder.blocks.iter().enumerate() {
         let (d, u) = compute_def_use(block)?;
-        println!("use: {:?} def: {:?}", u, d);
         uses[i] = u;
         defs[i] = d;
     }
@@ -37,7 +36,7 @@ pub fn compute_liveness(
                 if defs[b].contains(var) {
                     continue;
                 }
-                differences.insert(var.clone());
+                differences.insert(*var);
             }
 
             live_in[b].clear();
@@ -63,11 +62,11 @@ pub fn compute_def_use(bb: &BasicBlock) -> Result<(HashSet<Variable>, HashSet<Va
 
     for inst in &bb.instrs {
         for def in inst.get_def()? {
-            defs.insert(def.clone());
+            defs.insert(*def);
         }
         for u in inst.get_use()? {
             if !defs.contains(u) {
-                uses.insert(u.clone());
+                uses.insert(*u);
             }
         }
     }

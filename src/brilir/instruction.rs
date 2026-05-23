@@ -100,7 +100,7 @@ impl IrInstruction {
 
 impl Debug for Variable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        return write!(f, "v{}_{}", self.id, self.index);
+        write!(f, "v{}_{}", self.id, self.index)
     }
 }
 

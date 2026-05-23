@@ -18,17 +18,17 @@ pub struct BasicBlock {
 
 impl Debug for BasicBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "");
+        writeln!(f)?;
         writeln!(
             f,
             "bb_{} succs: {:?} preds: {:?}",
             self.id, self.successors, self.predecessors
-        );
+        )?;
         for phi in self.phis.iter() {
-            writeln!(f, "  {:?}", phi);
+            writeln!(f, "  {:?}", phi)?;
         }
         for instr in self.instrs.iter() {
-            writeln!(f, "  {:?}", instr);
+            writeln!(f, "  {:?}", instr)?;
         }
         write!(f, "")
     }
@@ -49,7 +49,7 @@ impl Debug for Phi {
 impl BasicBlock {
     pub fn new(id: BasicBlockId) -> Self {
         Self {
-            id: id,
+            id,
             instrs: Vec::new(),
             successors: HashSet::new(),
             predecessors: HashSet::new(),
@@ -63,6 +63,12 @@ impl BasicBlock {
 pub struct Builder {
     pub blocks: Vec<BasicBlock>,
     pub liveness: (Vec<HashSet<Variable>>, Vec<HashSet<Variable>>),
+}
+
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Builder {

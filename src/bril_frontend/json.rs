@@ -147,8 +147,8 @@ pub enum Op {
         funcs: Vec<String>,
         #[serde(default)]
         args: Vec<String>,
-        #[serde(rename = "type")]
-        typ: String,
+        #[serde(rename = "type", default)]
+        typ: Option<String>,
     },
     Ret {
         #[serde(default)]

@@ -41,6 +41,8 @@ pub struct Builder {
     pub blocks: Vec<BasicBlock>,
     pub liveness: (Vec<HashSet<Variable>>, Vec<HashSet<Variable>>),
     pub next_var_id: usize,
+    pub name: String,
+    pub params: Vec<Variable>,
 }
 
 impl Builder {
@@ -49,6 +51,8 @@ impl Builder {
             blocks: Vec::new(),
             liveness: (Vec::new(), Vec::new()),
             next_var_id: 0,
+            name: String::new(),
+            params: Vec::new(),
         }
     }
 

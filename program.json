@@ -1,0 +1,1581 @@
+{
+  "functions": [
+    {
+      "args": [
+        {
+          "name": "x",
+          "type": "int"
+        }
+      ],
+      "instrs": [
+        {
+          "dest": "seed",
+          "op": "const",
+          "type": "int",
+          "value": 972
+        },
+        {
+          "dest": "base",
+          "op": "const",
+          "type": "int",
+          "value": 130
+        },
+        {
+          "args": [
+            "seed",
+            "base"
+          ],
+          "dest": "t0",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "d1",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "t0",
+            "d1"
+          ],
+          "dest": "t1",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t1",
+            "t0"
+          ],
+          "dest": "t2",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "d3",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "t2",
+            "d3"
+          ],
+          "dest": "t3",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t3",
+            "t2"
+          ],
+          "dest": "t4",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "d5",
+          "op": "const",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "args": [
+            "t4",
+            "d5"
+          ],
+          "dest": "t5",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "d6",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "t5",
+            "d6"
+          ],
+          "dest": "t6",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "d7",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "t6",
+            "d7"
+          ],
+          "dest": "t7",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t7"
+          ],
+          "op": "ret"
+        }
+      ],
+      "name": "leaf1",
+      "type": "int"
+    },
+    {
+      "args": [
+        {
+          "name": "x",
+          "type": "int"
+        }
+      ],
+      "instrs": [
+        {
+          "dest": "seed",
+          "op": "const",
+          "type": "int",
+          "value": 507
+        },
+        {
+          "dest": "base",
+          "op": "const",
+          "type": "int",
+          "value": 969
+        },
+        {
+          "args": [
+            "x",
+            "seed"
+          ],
+          "dest": "t0",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t0",
+            "x"
+          ],
+          "dest": "t1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "d2",
+          "op": "const",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "args": [
+            "t1",
+            "d2"
+          ],
+          "dest": "t2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "d3",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "t2",
+            "d3"
+          ],
+          "dest": "t3",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "d4",
+          "op": "const",
+          "type": "int",
+          "value": 9
+        },
+        {
+          "args": [
+            "t3",
+            "d4"
+          ],
+          "dest": "t4",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t4",
+            "t3"
+          ],
+          "dest": "t5",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "d6",
+          "op": "const",
+          "type": "int",
+          "value": 6
+        },
+        {
+          "args": [
+            "t5",
+            "d6"
+          ],
+          "dest": "t6",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "d7",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "t6",
+            "d7"
+          ],
+          "dest": "t7",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t7",
+            "t6"
+          ],
+          "dest": "t8",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "seed",
+            "base"
+          ],
+          "dest": "diff",
+          "op": "sub",
+          "type": "int"
+        },
+        {
+          "args": [
+            "diff"
+          ],
+          "op": "ret"
+        }
+      ],
+      "name": "leaf2",
+      "type": "int"
+    },
+    {
+      "args": [
+        {
+          "name": "x",
+          "type": "int"
+        }
+      ],
+      "instrs": [
+        {
+          "dest": "seed",
+          "op": "const",
+          "type": "int",
+          "value": 357
+        },
+        {
+          "dest": "base",
+          "op": "const",
+          "type": "int",
+          "value": 119
+        },
+        {
+          "dest": "d0",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "seed",
+            "d0"
+          ],
+          "dest": "t0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "d1",
+          "op": "const",
+          "type": "int",
+          "value": 7
+        },
+        {
+          "args": [
+            "t0",
+            "d1"
+          ],
+          "dest": "t1",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "d2",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "t1",
+            "d2"
+          ],
+          "dest": "t2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t2",
+            "t1"
+          ],
+          "dest": "t3",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t3",
+            "t2"
+          ],
+          "dest": "t4",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "d5",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "t4",
+            "d5"
+          ],
+          "dest": "t5",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "t5"
+          ],
+          "op": "ret"
+        }
+      ],
+      "name": "leaf3",
+      "type": "int"
+    },
+    {
+      "args": [
+        {
+          "name": "x",
+          "type": "int"
+        }
+      ],
+      "instrs": [
+        {
+          "dest": "p0",
+          "op": "const",
+          "type": "int",
+          "value": 862
+        },
+        {
+          "dest": "pd0",
+          "op": "const",
+          "type": "int",
+          "value": 7
+        },
+        {
+          "args": [
+            "p0",
+            "pd0"
+          ],
+          "dest": "n0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "p1",
+          "op": "const",
+          "type": "int",
+          "value": 933
+        },
+        {
+          "dest": "pd1",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "p1",
+            "pd1"
+          ],
+          "dest": "n1",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n0",
+            "n1"
+          ],
+          "dest": "n2",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd2",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "n2",
+            "pd2"
+          ],
+          "dest": "n3",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n3",
+            "n0"
+          ],
+          "dest": "n4",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd3",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "n4",
+            "pd3"
+          ],
+          "dest": "n5",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "px0",
+          "op": "const",
+          "type": "int",
+          "value": 201
+        },
+        {
+          "dest": "pxd0",
+          "op": "const",
+          "type": "int",
+          "value": 6
+        },
+        {
+          "args": [
+            "px0",
+            "pxd0"
+          ],
+          "dest": "pn0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "pn0",
+            "n3"
+          ],
+          "dest": "pn1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "pn1",
+            "x"
+          ],
+          "dest": "arg0",
+          "op": "sub",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg0"
+          ],
+          "dest": "r0",
+          "funcs": [
+            "leaf1"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "dest": "pp0",
+          "op": "const",
+          "type": "int",
+          "value": 545
+        },
+        {
+          "dest": "ppd0",
+          "op": "const",
+          "type": "int",
+          "value": 7
+        },
+        {
+          "args": [
+            "pp0",
+            "ppd0"
+          ],
+          "dest": "ppn0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "ppn0",
+            "n5"
+          ],
+          "dest": "ppn1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "ppd1",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "ppn1",
+            "ppd1"
+          ],
+          "dest": "ppn2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "ppn2",
+            "ppn0"
+          ],
+          "dest": "ppn3",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "ppn3",
+            "x"
+          ],
+          "dest": "arg1",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg1"
+          ],
+          "dest": "r1",
+          "funcs": [
+            "leaf2"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "args": [
+            "r1",
+            "r0"
+          ],
+          "dest": "result",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "result"
+          ],
+          "op": "ret"
+        }
+      ],
+      "name": "mid1",
+      "type": "int"
+    },
+    {
+      "args": [
+        {
+          "name": "x",
+          "type": "int"
+        }
+      ],
+      "instrs": [
+        {
+          "dest": "p0",
+          "op": "const",
+          "type": "int",
+          "value": 429
+        },
+        {
+          "dest": "p1",
+          "op": "const",
+          "type": "int",
+          "value": 950
+        },
+        {
+          "dest": "pd0",
+          "op": "const",
+          "type": "int",
+          "value": 6
+        },
+        {
+          "args": [
+            "p0",
+            "pd0"
+          ],
+          "dest": "n0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n0",
+            "p1"
+          ],
+          "dest": "n1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd1",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "n1",
+            "pd1"
+          ],
+          "dest": "n2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n2",
+            "n0"
+          ],
+          "dest": "n3",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd2",
+          "op": "const",
+          "type": "int",
+          "value": 7
+        },
+        {
+          "args": [
+            "n3",
+            "pd2"
+          ],
+          "dest": "n4",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n4",
+            "n2"
+          ],
+          "dest": "n5",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd3",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "n5",
+            "pd3"
+          ],
+          "dest": "n6",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "x",
+            "n4"
+          ],
+          "dest": "arg0",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg0"
+          ],
+          "dest": "r0",
+          "funcs": [
+            "leaf2"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "dest": "ic0",
+          "op": "const",
+          "type": "int",
+          "value": 912
+        },
+        {
+          "dest": "icd0",
+          "op": "const",
+          "type": "int",
+          "value": 4
+        },
+        {
+          "args": [
+            "ic0",
+            "icd0"
+          ],
+          "dest": "in0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in0",
+            "n6"
+          ],
+          "dest": "in1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "icd1",
+          "op": "const",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "args": [
+            "in1",
+            "icd1"
+          ],
+          "dest": "in2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in2",
+            "in0"
+          ],
+          "dest": "in3",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "icd2",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "in3",
+            "icd2"
+          ],
+          "dest": "in4",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in4",
+            "n0"
+          ],
+          "dest": "arg1",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg1"
+          ],
+          "dest": "r1",
+          "funcs": [
+            "leaf3"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "dest": "xc0",
+          "op": "const",
+          "type": "int",
+          "value": 87
+        },
+        {
+          "dest": "xcd0",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "xc0",
+            "xcd0"
+          ],
+          "dest": "xn0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "xn0",
+            "in4"
+          ],
+          "dest": "xn1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "xn1",
+            "n2"
+          ],
+          "dest": "xn2",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "xc0"
+          ],
+          "dest": "r2",
+          "funcs": [
+            "leaf1"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "args": [
+            "r2",
+            "r0"
+          ],
+          "dest": "e0",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "e0",
+            "r1"
+          ],
+          "dest": "e1",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "e1"
+          ],
+          "op": "ret"
+        }
+      ],
+      "name": "mid2",
+      "type": "int"
+    },
+    {
+      "args": [
+        {
+          "name": "x",
+          "type": "int"
+        }
+      ],
+      "instrs": [
+        {
+          "dest": "p0",
+          "op": "const",
+          "type": "int",
+          "value": 957
+        },
+        {
+          "dest": "pd0",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "p0",
+            "pd0"
+          ],
+          "dest": "n0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "p1",
+          "op": "const",
+          "type": "int",
+          "value": 898
+        },
+        {
+          "args": [
+            "n0",
+            "p1"
+          ],
+          "dest": "n1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd1",
+          "op": "const",
+          "type": "int",
+          "value": 4
+        },
+        {
+          "args": [
+            "n1",
+            "pd1"
+          ],
+          "dest": "n2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "pd2",
+          "op": "const",
+          "type": "int",
+          "value": 7
+        },
+        {
+          "args": [
+            "p0",
+            "pd2"
+          ],
+          "dest": "n3",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n3",
+            "n2"
+          ],
+          "dest": "n4",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd3",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "n4",
+            "pd3"
+          ],
+          "dest": "n5",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n5",
+            "n3"
+          ],
+          "dest": "pn0",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd4",
+          "op": "const",
+          "type": "int",
+          "value": 6
+        },
+        {
+          "args": [
+            "pn0",
+            "pd4"
+          ],
+          "dest": "pn1",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "pn1",
+            "n0"
+          ],
+          "dest": "pn2",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "pn2",
+            "x"
+          ],
+          "dest": "arg0",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg0"
+          ],
+          "dest": "r0",
+          "funcs": [
+            "mid1"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "dest": "ic0",
+          "op": "const",
+          "type": "int",
+          "value": 738
+        },
+        {
+          "dest": "icd0",
+          "op": "const",
+          "type": "int",
+          "value": 4
+        },
+        {
+          "args": [
+            "ic0",
+            "icd0"
+          ],
+          "dest": "in0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in0",
+            "n5"
+          ],
+          "dest": "in1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "icd1",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "in1",
+            "icd1"
+          ],
+          "dest": "in2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in2",
+            "in0"
+          ],
+          "dest": "in3",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "icd2",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "in3",
+            "icd2"
+          ],
+          "dest": "in4",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in4",
+            "pn2"
+          ],
+          "dest": "in5",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in5",
+            "x"
+          ],
+          "dest": "arg1",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg1"
+          ],
+          "dest": "r1",
+          "funcs": [
+            "mid2"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "args": [
+            "r1",
+            "r0"
+          ],
+          "dest": "result",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "result"
+          ],
+          "op": "ret"
+        }
+      ],
+      "name": "top1",
+      "type": "int"
+    },
+    {
+      "args": [
+        {
+          "name": "x",
+          "type": "int"
+        }
+      ],
+      "instrs": [
+        {
+          "dest": "p0",
+          "op": "const",
+          "type": "int",
+          "value": 906
+        },
+        {
+          "dest": "p1",
+          "op": "const",
+          "type": "int",
+          "value": 955
+        },
+        {
+          "dest": "pd0",
+          "op": "const",
+          "type": "int",
+          "value": 4
+        },
+        {
+          "args": [
+            "p0",
+            "pd0"
+          ],
+          "dest": "n0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "pd1",
+          "op": "const",
+          "type": "int",
+          "value": 8
+        },
+        {
+          "args": [
+            "p1",
+            "pd1"
+          ],
+          "dest": "n1",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n0",
+            "n1"
+          ],
+          "dest": "n2",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd2",
+          "op": "const",
+          "type": "int",
+          "value": 7
+        },
+        {
+          "args": [
+            "n2",
+            "pd2"
+          ],
+          "dest": "n3",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n3",
+            "n0"
+          ],
+          "dest": "n4",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "pd3",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "n4",
+            "pd3"
+          ],
+          "dest": "n5",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "pd4",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "n5",
+            "pd4"
+          ],
+          "dest": "n6",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n6",
+            "n3"
+          ],
+          "dest": "n7",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n7",
+            "x"
+          ],
+          "dest": "arg0",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg0"
+          ],
+          "dest": "r0",
+          "funcs": [
+            "mid2"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "dest": "ic0",
+          "op": "const",
+          "type": "int",
+          "value": 670
+        },
+        {
+          "args": [
+            "ic0",
+            "n5"
+          ],
+          "dest": "in0",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "icd0",
+          "op": "const",
+          "type": "int",
+          "value": 6
+        },
+        {
+          "args": [
+            "in0",
+            "icd0"
+          ],
+          "dest": "in1",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in1",
+            "n7"
+          ],
+          "dest": "in2",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "icd1",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "in2",
+            "icd1"
+          ],
+          "dest": "in3",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "in3",
+            "x"
+          ],
+          "dest": "arg1",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "arg1"
+          ],
+          "dest": "r1",
+          "funcs": [
+            "leaf3"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "dest": "xc",
+          "op": "const",
+          "type": "int",
+          "value": 63
+        },
+        {
+          "dest": "xcd",
+          "op": "const",
+          "type": "int",
+          "value": 4
+        },
+        {
+          "args": [
+            "xc",
+            "xcd"
+          ],
+          "dest": "xn0",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "xn0",
+            "in1"
+          ],
+          "dest": "xn1",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "dest": "xcd1",
+          "op": "const",
+          "type": "int",
+          "value": 3
+        },
+        {
+          "args": [
+            "xn1",
+            "xcd1"
+          ],
+          "dest": "xn2",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "dest": "xcd2",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "xn2",
+            "xcd2"
+          ],
+          "dest": "xn3",
+          "op": "div",
+          "type": "int"
+        },
+        {
+          "args": [
+            "xn3",
+            "xn0"
+          ],
+          "dest": "xn4",
+          "op": "mul",
+          "type": "int"
+        },
+        {
+          "args": [
+            "xc"
+          ],
+          "dest": "r2",
+          "funcs": [
+            "mid1"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "args": [
+            "r2",
+            "r0"
+          ],
+          "dest": "e0",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "e0",
+            "r1"
+          ],
+          "dest": "e1",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "e1"
+          ],
+          "op": "ret"
+        }
+      ],
+      "name": "top2",
+      "type": "int"
+    },
+    {
+      "instrs": [
+        {
+          "dest": "n",
+          "op": "const",
+          "type": "int",
+          "value": 240
+        },
+        {
+          "args": [
+            "n"
+          ],
+          "dest": "r1",
+          "funcs": [
+            "top1"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "args": [
+            "n"
+          ],
+          "dest": "r2",
+          "funcs": [
+            "top2"
+          ],
+          "op": "call",
+          "type": "int"
+        },
+        {
+          "args": [
+            "r1",
+            "r2"
+          ],
+          "dest": "t",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "args": [
+            "r1"
+          ],
+          "op": "print"
+        },
+        {
+          "args": [
+            "r2"
+          ],
+          "op": "print"
+        },
+        {
+          "args": [
+            "t"
+          ],
+          "op": "print"
+        }
+      ],
+      "name": "main"
+    }
+  ]
+}

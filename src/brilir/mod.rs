@@ -4,7 +4,7 @@ pub mod instruction;
 use crate::{
     bril_frontend::{
         self,
-        json::{Instruction, Op},
+        json::{Instruction, Op, ValueDef},
     },
     brilir::{
         builder::Builder,
@@ -14,28 +14,68 @@ use crate::{
 use anyhow::Result;
 use hashbrown::HashMap;
 
-pub fn compile_bril() -> Result<Builder> {
+pub fn compile_bril() -> Result<Vec<Builder>> {
     let mut program = bril_frontend::parse_json()?;
-    let mut instrs: Vec<Instruction> = Vec::new();
+    let mut result = Vec::new();
 
-    let data = build_data(&program.functions[0].instrs)?;
-
-    instrs = std::mem::take(&mut program.functions[0].instrs);
-    let mut builder = build_basic_blocks(instrs, data)?;
-    build_edges(&mut builder);
-
-    for block in builder.blocks.iter() {
-        println!("{:?}", block);
+    // Pre-pass: compute global entry block IDs for all functions so that
+    // Call instructions can reference the callee's entry by block ID.
+    let mut fn_entry_map: HashMap<String, usize> = HashMap::new();
+    let mut global_offset = 0usize;
+    for func in &program.functions {
+        fn_entry_map.insert(func.name.clone(), global_offset);
+        global_offset += count_blocks_from_json(&func.instrs);
     }
 
-    Ok(builder)
+    for func in program.functions.iter_mut() {
+        let data = build_data(&func.instrs, &func.args)?;
+
+        // Capture param variables from the var_to_id map before data is consumed.
+        let fn_params: Vec<Variable> = func.args.iter()
+            .map(|p| Variable(*data.0.get(&p.name).expect("param not in var_to_id")))
+            .collect();
+
+        let _ = fn_entry_map[&func.name]; // ensure the function is in the map
+        let instrs = std::mem::take(&mut func.instrs);
+        let mut builder = build_basic_blocks(instrs, data, &fn_entry_map)?;
+        build_edges(&mut builder);
+
+        builder.name   = func.name.clone();
+        builder.params = fn_params;
+
+        for block in builder.blocks.iter() {
+            println!("{:?}", block);
+        }
+
+        result.push(builder);
+    }
+
+    Ok(result)
+}
+
+/// Count the number of basic blocks a JSON function's instruction list will
+/// produce, without fully building the CFG.  Used to assign global block IDs.
+fn count_blocks_from_json(instrs: &[Instruction]) -> usize {
+    let has_implicit_entry = !matches!(instrs.first(), Some(Instruction::Label { .. }));
+    let label_count = instrs.iter()
+        .filter(|i| matches!(i, Instruction::Label { .. }))
+        .count();
+    (if has_implicit_entry { 1 } else { 0 }) + label_count
 }
 
 pub fn build_basic_blocks(
     instrs: Vec<Instruction>,
-    data: (HashMap<String, usize>, HashMap<String, usize>, usize),
+    data: (HashMap<String, usize>, HashMap<String, usize>, usize, bool),
+    fn_entry_map: &HashMap<String, usize>,
 ) -> Result<Builder> {
     let mut builder = builder::Builder::new();
+
+    // If the function doesn't start with a label, create an implicit
+    // entry block (block 0) so that the initial instructions have
+    // somewhere to live.
+    if data.3 {
+        builder.add_block(0);
+    }
 
     for instr in instrs {
         match instr {
@@ -243,12 +283,29 @@ pub fn build_basic_blocks(
                 }
 
                 Op::Ret { args } => {
-                    let src = data.0.get(&args[0]).unwrap();
-                    builder.add_instr(IrInstruction::Ret(Variable(*src)));
+                    if let Some(arg_name) = args.first() {
+                        let src = data.0.get(arg_name).unwrap();
+                        builder.add_instr(IrInstruction::Ret(Variable(*src)));
+                    }
+                    // void ret: fall through; end-of-function adds synthetic ret
+                }
+
+                Op::Call { dest, funcs, args, .. } => {
+                    let callee_name = funcs.first().map(String::as_str).unwrap_or("");
+                    let callee_bb = *fn_entry_map.get(callee_name)
+                        .unwrap_or_else(|| panic!("unknown callee: {}", callee_name));
+                    let arg_vars: Vec<Variable> = args.iter()
+                        .map(|a| Variable(*data.0.get(a).unwrap()))
+                        .collect();
+                    let dest_var = dest.as_ref().map(|d| Variable(*data.0.get(d).unwrap()));
+                    builder.add_instr(IrInstruction::Call {
+                        callee_bb,
+                        args: arg_vars,
+                        dest: dest_var,
+                    });
                 }
 
                 Op::Nop => {}
-                _ => {}
             },
         }
     }
@@ -272,12 +329,27 @@ pub fn build_basic_blocks(
 
 pub fn build_data(
     instrs: &Vec<Instruction>,
-) -> Result<(HashMap<String, usize>, HashMap<String, usize>, usize)> {
+    params: &[ValueDef],
+) -> Result<(HashMap<String, usize>, HashMap<String, usize>, usize, bool)> {
     let mut next_variable_id = 0usize;
-    let mut next_block_id = 0usize;
+
+    // Check if the function starts without a label.  If so, we reserve
+    // block ID 0 for an implicit entry block and begin label numbering
+    // from 1.
+    let needs_implicit_entry = !matches!(instrs.first(), Some(Instruction::Label { .. }));
+    let mut next_block_id: usize = if needs_implicit_entry { 1 } else { 0 };
 
     let mut var_to_id: HashMap<String, usize> = HashMap::new();
     let mut label_to_block: HashMap<String, usize> = HashMap::new();
+
+    // Pre-register function parameters so they get the lowest IDs and are
+    // visible to any read inside the function body.
+    for param in params {
+        if !var_to_id.contains_key(&param.name) {
+            var_to_id.insert(param.name.clone(), next_variable_id);
+            next_variable_id += 1;
+        }
+    }
 
     for instr in instrs.iter() {
         match instr {
@@ -309,11 +381,17 @@ pub fn build_data(
                         next_variable_id += 1;
                     }
                 }
+                Op::Call { dest: Some(dest), .. } => {
+                    if !var_to_id.contains_key(dest.as_str()) {
+                        var_to_id.insert(dest.clone(), next_variable_id);
+                        next_variable_id += 1;
+                    }
+                }
                 _ => {}
             },
         }
     }
-    Ok((var_to_id, label_to_block, next_variable_id))
+    Ok((var_to_id, label_to_block, next_variable_id, needs_implicit_entry))
 }
 
 pub fn build_edges(builder: &mut Builder) {
@@ -333,8 +411,12 @@ pub fn build_edges(builder: &mut Builder) {
                     builder.add_edge(block.id, else_successor);
                 }
                 _ => {
-                    if block.id + 1 < builder.blocks.len() {
-                        builder.add_edge(block.id, block.id + 1);
+                    // Ret is a terminal — no fall-through.
+                    // Print, Call, etc. can fall through to the next block.
+                    if !matches!(inst, IrInstruction::Ret(_)) {
+                        if block.id + 1 < builder.blocks.len() {
+                            builder.add_edge(block.id, block.id + 1);
+                        }
                     }
                 }
             }

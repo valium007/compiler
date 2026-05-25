@@ -45,7 +45,11 @@ pub enum IrInstruction {
     Jmp(BasicBlockId),
     Br(Variable, BasicBlockId, BasicBlockId),
     Ret(Variable),
-    Call,
+    Call {
+        callee_bb: usize,
+        args: Vec<Variable>,
+        dest: Option<Variable>,
+    },
     Nop,
 }
 
@@ -100,8 +104,12 @@ impl Debug for IrInstruction {
             IrInstruction::Ret(var) => {
                 write!(f, "ret {:?}", var)
             }
-            IrInstruction::Call => {
-                write!(f, "call")
+            IrInstruction::Call { callee_bb, args, dest } => {
+                if let Some(d) = dest {
+                    write!(f, "{:?} = call .bb_{} {:?}", d, callee_bb, args)
+                } else {
+                    write!(f, "call .bb_{} {:?}", callee_bb, args)
+                }
             }
             IrInstruction::Nop => {
                 write!(f, "nop")

@@ -345,6 +345,6 @@ def bril2txt():
 with open("program.bril", "r") as f:
     # Read the entire file
     content = f.read()
-    with open("out.json", "w+") as o:
+    with open("program.json", "w+") as o:
         o.write(parse_bril(content))
         

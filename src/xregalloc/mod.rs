@@ -1,10 +1,44 @@
 use std::collections::{HashMap, HashSet};
 
+/// The category of a value, dictating which physical register file it can
+/// live in. Allocation is partitioned by class: an `Int` var can never be
+/// considered for a `Float` preg, and vice versa.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct Var(pub u32);
+pub enum RegClass {
+    Int = 0,
+    Float = 1,
+    Vector = 2,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub struct PReg(pub u32);
+pub struct Var {
+    pub class: RegClass,
+    pub id: u32,
+}
+
+impl Var {
+    pub const fn new(id: u32, class: RegClass) -> Self {
+        Self { class, id }
+    }
+    pub const fn int(id: u32) -> Self {
+        Self { class: RegClass::Int, id }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub struct PReg {
+    pub class: RegClass,
+    pub index: u8,
+}
+
+impl PReg {
+    pub const fn new(index: u8, class: RegClass) -> Self {
+        Self { class, index }
+    }
+    pub const fn int(index: u8) -> Self {
+        Self { class: RegClass::Int, index }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct SpillSlot(pub u32);
@@ -13,6 +47,24 @@ pub struct SpillSlot(pub u32);
 pub enum Allocation {
     Reg(PReg),
     Stack(SpillSlot),
+}
+
+/// What occupies a physical register in `future_active`.
+///
+/// Per the paper, only real variables live in the future-active set. We also
+/// pre-load *point reservations* (`Clobber` and `Fixed`) so the §3.4
+/// LiveAtTheSameTime check alone is enough to detect every interference: there
+/// is no separate `live_conflict` side-table for instructions that implicitly
+/// require the register (e.g. `idiv` clobbering EDX, or a fixed EAX use).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+enum Occupant {
+    /// A real variable queued to occupy this preg later in the scan.
+    Var(Var),
+    /// The preg is reserved at this single instruction by a clobber.
+    Clobber(usize),
+    /// The preg is reserved at this single instruction by a fixed operand
+    /// (some variable has `Constraint::Fixed(preg)` at this instruction).
+    Fixed(usize),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -48,7 +100,6 @@ pub trait AllocFunction {
     fn inst_clobbers(&self, inst: usize) -> &[PReg];
     fn num_vregs(&self) -> usize;
     fn scratch_regs(&self) -> &[PReg];
-    fn is_valid_combination(&self, inst: usize, allocs: &[Allocation]) -> bool;
 
     fn is_phi(&self, inst: usize) -> bool;
     fn phi_op(&self, inst: usize, pred: usize) -> Var;
@@ -97,7 +148,6 @@ pub fn allocate<F: AllocFunction>(
         .filter(|r| !scratch_regs.contains(r))
         .collect();
 
-    // Map each register to the instructions that clobber it
     let mut clobbered_insts: HashMap<PReg, Vec<usize>> = HashMap::new();
     for inst in 0..func.num_instructions() {
         for &preg in func.inst_clobbers(inst) {
@@ -105,8 +155,7 @@ pub fn allocate<F: AllocFunction>(
         }
     }
 
-    // Identify all pinned variables (cannot be spilled)
-    let mut pinned_vars = HashSet::new();
+    let mut pinned_vars: HashSet<Var> = HashSet::new();
     for inst in 0..func.num_instructions() {
         for op in func.inst_operands(inst) {
             if matches!(op.constraint, Constraint::Fixed(_) | Constraint::Reg) {
@@ -140,73 +189,462 @@ pub fn allocate<F: AllocFunction>(
     }
 }
 
-/// `live_conflict(v, preg)` — would assigning `preg` as `v`'s home register
-/// corrupt `v` (or be corrupted by `v`) at some instruction along its lifetime?
+/// Immutable per-attempt analysis state.
 ///
-/// Returns true if there exists an instruction `I` such that:
-///   - `I` requires `preg` (either `I` clobbers `preg`, or `I` has a Fixed(preg)
-///     operand for *some* variable), AND
-///   - `v` is live at `I`, AND
-///   - `v` itself does NOT have a Fixed(preg) operand at `I`. (If it does, `v`'s
-///     role at `I` is precisely to flow through `preg` — handled by the fixed
-///     constraint, not a conflict.)
+/// All read-only inputs to the inner allocator (CFG/IR via `func`, the
+/// liveness fixpoint, def/use maps, and the cached classification of pinned
+/// and spilled vars) live here. Mutable allocation state (`active`,
+/// `future_active`, `vreg_alloc`, coalesce groups) is intentionally kept
+/// outside so methods on `Ctx` borrow `&self` while the caller mutates the
+/// allocation state alongside.
 ///
-/// Used both for the pre-allocation invariant from the paper (§3.4) and for
-/// the per-register conflict check inside the main `allocate_register` loop,
-/// so that any variable — Fixed or not — is kept out of a register whose value
-/// would be destroyed across the variable's live range.
-fn live_conflict<F: AllocFunction>(
-    v: Var,
-    preg: PReg,
-    func: &F,
-    live_ins: &[HashSet<Var>],
-    live_outs: &[HashSet<Var>],
-    uses: &HashMap<Var, Vec<usize>>,
-    var_defs: &HashMap<Var, Vec<usize>>,
-    inst_block: &[usize],
-    clobbered_insts: &HashMap<PReg, Vec<usize>>,
-    fixed_insts: &HashMap<PReg, Vec<usize>>,
-) -> bool {
-    let v_is_fixed_to_preg_at = |inst: usize| -> bool {
-        func.inst_operands(inst)
-            .iter()
-            .any(|op| op.var == v && op.constraint == Constraint::Fixed(preg))
-    };
+/// Use-/def-list flat indices are `inst * 2 + 1`. The +1 keeps def and use of
+/// the *same* instruction comparable as distinct half-steps, matching the
+/// "before / at / after" ordering implied by the paper's algorithms.
+struct Ctx<'a, F: AllocFunction> {
+    func: &'a F,
+    allocatable_by_class: HashMap<RegClass, Vec<PReg>>,
+    pinned_vars: &'a HashSet<Var>,
+    live_ins: Vec<HashSet<Var>>,
+    live_outs: Vec<HashSet<Var>>,
+    uses: HashMap<Var, Vec<usize>>,
+    var_defs: HashMap<Var, Vec<usize>>,
+    inst_block: Vec<usize>,
+}
 
-    // Skipping a clobber/fixed instruction `I` because `v` is itself fixed to
-    // `preg` at `I` is only safe when `v` does not live past `I`. If `v` is
-    // used again later, its value must survive `I` — but `I` clobbers `preg`
-    // after consuming the use, so `preg` cannot be `v`'s home.
-    let v_dies_at = |inst: usize| -> bool {
-        let inst_flat = inst * 2 + 1;
-        uses.get(&v).map_or(true, |ul| {
-            !ul.iter().any(|&uf| uf > inst_flat)
-        })
-    };
+impl<'a, F: AllocFunction> Ctx<'a, F> {
+    fn build(
+        func: &'a F,
+        allocatable_regs: &'a [PReg],
+        pinned_vars: &'a HashSet<Var>,
+    ) -> Self {
+        let mut allocatable_by_class: HashMap<RegClass, Vec<PReg>> = HashMap::new();
+        for &p in allocatable_regs {
+            allocatable_by_class.entry(p.class).or_default().push(p);
+        }
+        let num_blocks = func.num_blocks();
+        let num_insts = func.num_instructions();
 
-    if let Some(clob_insts) = clobbered_insts.get(&preg) {
-        for &ci in clob_insts {
-            if v_is_fixed_to_preg_at(ci) && v_dies_at(ci) {
-                continue;
+        // ─── Liveness analysis (fixpoint over reverse block order) ───
+        let mut live_ins: Vec<HashSet<Var>> = vec![HashSet::new(); num_blocks];
+        let mut live_outs: Vec<HashSet<Var>> = vec![HashSet::new(); num_blocks];
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for b in (0..num_blocks).rev() {
+                let mut out_vars: HashSet<Var> = HashSet::new();
+                for &succ in func.block_successors(b) {
+                    for &v in &live_ins[succ] {
+                        out_vars.insert(v);
+                    }
+                    for inst in func.block_instructions(succ) {
+                        if func.is_phi(inst) {
+                            out_vars.insert(func.phi_op(inst, b));
+                        }
+                    }
+                }
+                live_outs[b] = out_vars;
+
+                let mut current = live_outs[b].clone();
+                for inst in func.block_instructions(b).rev() {
+                    for op in func.inst_operands(inst) {
+                        match op.kind {
+                            OperandKind::Def => { current.remove(&op.var); }
+                            OperandKind::Use => { current.insert(op.var); }
+                        }
+                    }
+                }
+
+                if current != live_ins[b] {
+                    live_ins[b] = current;
+                    changed = true;
+                }
             }
-            if is_live_at(v, ci, func, live_ins, live_outs, uses, var_defs, inst_block) {
+        }
+
+        // ─── Definition map and inst→block map ───
+        let mut var_defs: HashMap<Var, Vec<usize>> = HashMap::new();
+        let mut inst_block = vec![0usize; num_insts];
+        for b in 0..num_blocks {
+            for inst in func.block_instructions(b) {
+                inst_block[inst] = b;
+                let inst_flat = inst * 2 + 1;
+                for op in func.inst_operands(inst) {
+                    if matches!(op.kind, OperandKind::Def) {
+                        var_defs.entry(op.var).or_default().push(inst_flat);
+                    }
+                }
+            }
+        }
+
+        // ─── Use map: explicit operand uses + phi operands at predecessor terminators ───
+        let mut uses: HashMap<Var, Vec<usize>> = HashMap::new();
+        for inst in 0..num_insts {
+            let flat = inst * 2 + 1;
+            for op in func.inst_operands(inst) {
+                if matches!(op.kind, OperandKind::Use) {
+                    uses.entry(op.var).or_default().push(flat);
+                }
+            }
+        }
+        for b in 0..num_blocks {
+            let term_inst = func.block_instructions(b).end.saturating_sub(1);
+            let flat = term_inst * 2 + 1;
+            for &succ in func.block_successors(b) {
+                for inst in func.block_instructions(succ) {
+                    if func.is_phi(inst) {
+                        uses.entry(func.phi_op(inst, b)).or_default().push(flat);
+                    }
+                }
+            }
+        }
+        for use_list in uses.values_mut() {
+            use_list.sort_unstable();
+        }
+
+        Self {
+            func,
+            allocatable_by_class,
+            pinned_vars,
+            live_ins,
+            live_outs,
+            uses,
+            var_defs,
+            inst_block,
+        }
+    }
+
+    fn num_blocks(&self) -> usize { self.func.num_blocks() }
+    fn num_insts(&self) -> usize { self.func.num_instructions() }
+
+    /// Is `v` live at instruction `inst`?
+    fn is_live_at(&self, v: Var, inst: usize) -> bool {
+        if inst >= self.inst_block.len() {
+            return false;
+        }
+        let b = self.inst_block[inst];
+        let range = self.func.block_instructions(b);
+
+        if self.live_outs[b].contains(&v) {
+            if let Some(defs) = self.var_defs.get(&v) {
+                if let Some(&def_flat) = defs.iter().find(|&&df| self.inst_block[df / 2] == b) {
+                    return inst >= def_flat / 2;
+                }
+            }
+            return true;
+        }
+
+        let def_in_b = self.var_defs.get(&v).and_then(|defs| {
+            defs.iter().copied().find(|&df| {
+                let di = df / 2;
+                di >= range.start && di < range.end
+            })
+        });
+        if let Some(def_flat) = def_in_b {
+            if inst < def_flat / 2 {
+                return false;
+            }
+        } else if !self.live_ins[b].contains(&v) {
+            return false;
+        }
+
+        if let Some(uses_list) = self.uses.get(&v) {
+            let start_flat = inst * 2 + 1;
+            let end_flat = (range.end - 1) * 2 + 1;
+            return uses_list.iter().any(|&uf| uf >= start_flat && uf <= end_flat);
+        }
+        false
+    }
+
+    /// Paper Algorithm 5/6: are `lhs` and `rhs` simultaneously live at some
+    /// program point?
+    fn live_at_the_same_time(&self, lhs: Var, rhs: Var) -> bool {
+        let empty: Vec<usize> = Vec::new();
+        let lhs_defs = self.var_defs.get(&lhs).unwrap_or(&empty);
+        let rhs_defs = self.var_defs.get(&rhs).unwrap_or(&empty);
+        if lhs_defs.is_empty() || rhs_defs.is_empty() {
+            return false;
+        }
+
+        for &def_l in lhs_defs {
+            let b_l = self.inst_block[def_l / 2];
+            for &def_r in rhs_defs {
+                let b_r = self.inst_block[def_r / 2];
+                if b_l == b_r
+                    && self.live_at_the_same_time_same_block(lhs, rhs, b_l, def_l, def_r)
+                {
+                    return true;
+                }
+            }
+        }
+        for &def_l in lhs_defs {
+            let b_l = self.inst_block[def_l / 2];
+            if self.live_at_the_same_time_in_block(rhs, b_l, def_l) {
                 return true;
+            }
+        }
+        for &def_r in rhs_defs {
+            let b_r = self.inst_block[def_r / 2];
+            if self.live_at_the_same_time_in_block(lhs, b_r, def_r) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn live_at_the_same_time_same_block(
+        &self,
+        lhs: Var,
+        rhs: Var,
+        block: usize,
+        lhs_def_flat: usize,
+        rhs_def_flat: usize,
+    ) -> bool {
+        let lhs_live_out = self.live_outs[block].contains(&lhs);
+        let rhs_live_out = self.live_outs[block].contains(&rhs);
+
+        if lhs_live_out && rhs_live_out {
+            true
+        } else if !lhs_live_out && !rhs_live_out {
+            let (first, last_def_flat) = if lhs_def_flat < rhs_def_flat {
+                (lhs, rhs_def_flat)
+            } else {
+                (rhs, lhs_def_flat)
+            };
+            self.uses
+                .get(&first)
+                .map_or(false, |us| us.iter().any(|&u| u > last_def_flat))
+        } else {
+            let (non_live_out, live_out_def_flat) = if lhs_live_out {
+                (rhs, lhs_def_flat)
+            } else {
+                (lhs, rhs_def_flat)
+            };
+            self.uses
+                .get(&non_live_out)
+                .map_or(false, |us| us.iter().any(|&u| u > live_out_def_flat))
+        }
+    }
+
+    /// Is `other` live across `def_block`, where the reference variable is
+    /// defined at `def_flat` (flat index) within `def_block`?
+    fn live_at_the_same_time_in_block(
+        &self,
+        other: Var,
+        def_block: usize,
+        def_flat: usize,
+    ) -> bool {
+        if !self.live_ins[def_block].contains(&other) {
+            return false;
+        }
+        if self.live_outs[def_block].contains(&other) {
+            return true;
+        }
+        self.uses
+            .get(&other)
+            .map_or(false, |us| us.iter().any(|&u| u > def_flat))
+    }
+
+    /// Would putting `v` in `preg` conflict with the existing occupant `occ`?
+    ///
+    /// Carve-out: if `v` itself has a `Fixed(preg)` operand at the reservation
+    /// site and has no use past it, the "conflict" is exactly `v` flowing
+    /// through `preg` as planned by the constraint — not corruption — so it is
+    /// not a conflict.
+    fn occupant_conflicts_var(&self, v: Var, preg: PReg, occ: Occupant) -> bool {
+        match occ {
+            Occupant::Var(u) => {
+                if u == v {
+                    false
+                } else {
+                    self.live_at_the_same_time(v, u)
+                }
+            }
+            Occupant::Clobber(inst) | Occupant::Fixed(inst) => {
+                let v_fixed_here = self.func.inst_operands(inst).iter().any(|op| {
+                    op.var == v && op.constraint == Constraint::Fixed(preg)
+                });
+                if v_fixed_here {
+                    let inst_flat = inst * 2 + 1;
+                    let v_dies_here = self.uses.get(&v).map_or(true, |ul| {
+                        !ul.iter().any(|&uf| uf > inst_flat)
+                    });
+                    if v_dies_here {
+                        return false;
+                    }
+                }
+                self.is_live_at(v, inst)
             }
         }
     }
 
-    if let Some(fi) = fixed_insts.get(&preg) {
-        for &ii in fi {
-            if v_is_fixed_to_preg_at(ii) && v_dies_at(ii) {
-                continue;
-            }
-            if is_live_at(v, ii, func, live_ins, live_outs, uses, var_defs, inst_block) {
+    /// Paper §3.4 invariant: would assigning `preg` to `v` violate any
+    /// existing reservation in `active[preg] ∪ future_active[preg]`?
+    fn preg_conflict(
+        &self,
+        v: Var,
+        preg: PReg,
+        active: &HashMap<PReg, Var>,
+        future_active: &HashMap<PReg, HashSet<Occupant>>,
+    ) -> bool {
+        if let Some(&u) = active.get(&preg) {
+            if u != v && self.live_at_the_same_time(v, u) {
                 return true;
             }
         }
+        if let Some(f_occs) = future_active.get(&preg) {
+            for &occ in f_occs {
+                if self.occupant_conflicts_var(v, preg, occ) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
-    false
+    /// Pick the spill candidate with the furthest next use (Belady-ish).
+    fn select_spill_candidate(
+        &self,
+        failing_var: Var,
+        active: &HashMap<PReg, Var>,
+        current_inst_flat: usize,
+    ) -> Var {
+        let mut candidates: Vec<Var> = Vec::new();
+        if !self.pinned_vars.contains(&failing_var) {
+            candidates.push(failing_var);
+        }
+        for &v in active.values() {
+            if !self.pinned_vars.contains(&v) {
+                candidates.push(v);
+            }
+        }
+        if candidates.is_empty() {
+            // Everything pinned — caller will see this as forward progress
+            // failing; bubble up the original failing var.
+            return failing_var;
+        }
+
+        let mut best = candidates[0];
+        let mut furthest_use = 0usize;
+        for cand in candidates {
+            let next_use = self.uses.get(&cand).map_or(usize::MAX, |ul| {
+                ul.iter()
+                    .copied()
+                    .find(|&uf| uf >= current_inst_flat)
+                    .unwrap_or(usize::MAX)
+            });
+            if next_use > furthest_use {
+                furthest_use = next_use;
+                best = cand;
+            }
+        }
+        best
+    }
+
+    /// Place `v` into a register, updating `active`/`future_active`/`vreg_alloc`.
+    /// On failure, returns the var the outer loop should spill.
+    fn allocate_register(
+        &self,
+        v: Var,
+        current_inst_flat: usize,
+        active: &mut HashMap<PReg, Var>,
+        future_active: &mut HashMap<PReg, HashSet<Occupant>>,
+        vreg_alloc: &mut HashMap<Var, Allocation>,
+        coalesce_groups: &mut CoalesceGroups,
+        group_alloc: &mut HashMap<usize, PReg>,
+    ) -> Result<(), VarToSpill> {
+        // 0. Reuse existing assignment: a paused or previously-allocated var
+        //    must come back into the same preg.
+        if let Some(&Allocation::Reg(preg)) = vreg_alloc.get(&v) {
+            if let Some(occs) = future_active.get_mut(&preg) {
+                occs.remove(&Occupant::Var(v));
+            }
+            active.insert(preg, v);
+            let rep = coalesce_groups.find(v.id as usize);
+            group_alloc.insert(rep, preg);
+            return Ok(());
+        }
+
+        // 1. Pull from future-active (paper Algorithm 4). Only `Var` occupants
+        //    represent real variables to be allocated; `Clobber`/`Fixed`
+        //    entries are point-reservations and stay put.
+        let mut pulled = None;
+        for (&preg, occs) in future_active.iter_mut() {
+            if occs.remove(&Occupant::Var(v)) {
+                pulled = Some(preg);
+                break;
+            }
+        }
+        if let Some(preg) = pulled {
+            active.insert(preg, v);
+            vreg_alloc.insert(v, Allocation::Reg(preg));
+            let rep = coalesce_groups.find(v.id as usize);
+            group_alloc.insert(rep, preg);
+            return Ok(());
+        }
+
+        // 2. Prefer the coalesce group's register, when safe.
+        let rep = coalesce_groups.find(v.id as usize);
+        let class_pool = self
+            .allocatable_by_class
+            .get(&v.class)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        if let Some(&pref_preg) = group_alloc.get(&rep) {
+            if pref_preg.class == v.class
+                && class_pool.contains(&pref_preg)
+                && !self.preg_conflict(v, pref_preg, active, future_active)
+            {
+                active.insert(pref_preg, v);
+                vreg_alloc.insert(v, Allocation::Reg(pref_preg));
+                return Ok(());
+            }
+        }
+
+        // 2b. Two-address hint (paper §3.7): when allocating a Def at an
+        //     instruction, try the preg that holds the first Use operand of
+        //     the same instruction. For an x86 binary op `add dst, lhs, rhs`,
+        //     reusing lhs's preg as dst turns the lowering into the in-place
+        //     `add dst, rhs` and elides one `mov`.
+        //
+        //     The current_inst_flat encoding is `inst*2 + 1` for in-block
+        //     allocations and `block_start*2` for live-in starts, so an odd
+        //     value means "we're allocating a Def at this instruction".
+        if current_inst_flat & 1 == 1 {
+            let inst = current_inst_flat / 2;
+            for op in self.func.inst_operands(inst) {
+                if op.kind == OperandKind::Use && op.var.class == v.class {
+                    if let Some(Allocation::Reg(use_preg)) =
+                        vreg_alloc.get(&op.var).copied()
+                    {
+                        if class_pool.contains(&use_preg)
+                            && !self.preg_conflict(v, use_preg, active, future_active)
+                        {
+                            active.insert(use_preg, v);
+                            vreg_alloc.insert(v, Allocation::Reg(use_preg));
+                            group_alloc.insert(rep, use_preg);
+                            return Ok(());
+                        }
+                    }
+                    break; // Only the first class-matching Use is interesting.
+                }
+            }
+        }
+
+        // 3. First non-conflicting register of the matching class.
+        let chosen = class_pool.iter().copied().find(|&preg| {
+            !self.preg_conflict(v, preg, active, future_active)
+        });
+
+        if let Some(preg) = chosen {
+            active.insert(preg, v);
+            vreg_alloc.insert(v, Allocation::Reg(preg));
+            group_alloc.insert(rep, preg);
+            Ok(())
+        } else {
+            Err(VarToSpill(self.select_spill_candidate(v, active, current_inst_flat)))
+        }
+    }
 }
 
 fn allocate_attempt<F: AllocFunction>(
@@ -216,216 +654,103 @@ fn allocate_attempt<F: AllocFunction>(
     clobbered_insts: &HashMap<PReg, Vec<usize>>,
     pinned_vars: &HashSet<Var>,
 ) -> Result<AllocationAttemptResult, VarToSpill> {
-    let num_blocks = func.num_blocks();
-    let num_insts = func.num_instructions();
+    let ctx = Ctx::build(func, allocatable_regs, pinned_vars);
+    let num_blocks = ctx.num_blocks();
+    let num_insts = ctx.num_insts();
 
-    // ─── 1. Liveness Analysis ───
-    let mut live_ins = vec![HashSet::new(); num_blocks];
-    let mut live_outs = vec![HashSet::new(); num_blocks];
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for b in (0..num_blocks).rev() {
-            let mut out_vars = HashSet::new();
-            for &succ in func.block_successors(b) {
-                for &v in &live_ins[succ] {
-                    out_vars.insert(v);
-                }
-                for inst in func.block_instructions(succ) {
-                    if func.is_phi(inst) {
-                        let op_v = func.phi_op(inst, b);
-                        out_vars.insert(op_v);
-                    }
-                }
-            }
-            live_outs[b] = out_vars;
-
-            let mut current = live_outs[b].clone();
-            let range = func.block_instructions(b);
-            for inst in range.clone().rev() {
-                for op in func.inst_operands(inst) {
-                    match op.kind {
-                        OperandKind::Def => {
-                            current.remove(&op.var);
-                        }
-                        OperandKind::Use => {
-                            current.insert(op.var);
-                        }
-                    }
-                }
-            }
-
-            if current != live_ins[b] {
-                live_ins[b] = current;
-                changed = true;
-            }
-        }
-    }
-
-    // ─── 2. Definition and Use Mappings ───
-    let mut var_defs: HashMap<Var, Vec<usize>> = HashMap::new();
-    let mut inst_block = vec![0; num_insts];
-
-    for b in 0..num_blocks {
-        let range = func.block_instructions(b);
-        for inst in range {
-            inst_block[inst] = b;
-            let inst_flat = inst * 2 + 1;
-            for op in func.inst_operands(inst) {
-                if matches!(op.kind, OperandKind::Def) {
-                    var_defs.entry(op.var).or_default().push(inst_flat);
-                }
-            }
-        }
-    }
-
-    let mut uses: HashMap<Var, Vec<usize>> = HashMap::new();
-    for inst in 0..num_insts {
-        let flat = inst * 2 + 1;
-        for op in func.inst_operands(inst) {
-            if matches!(op.kind, OperandKind::Use) {
-                uses.entry(op.var).or_default().push(flat);
-            }
-        }
-    }
-    for b in 0..num_blocks {
-        let term_inst = func.block_instructions(b).end.saturating_sub(1);
-        let flat = term_inst * 2 + 1;
-        for &succ in func.block_successors(b) {
-            for inst in func.block_instructions(succ) {
-                if func.is_phi(inst) {
-                    let op_v = func.phi_op(inst, b);
-                    uses.entry(op_v).or_default().push(flat);
-                }
-            }
-        }
-    }
-    for use_list in uses.values_mut() {
-        use_list.sort_unstable();
-    }
-
-    // ─── 2b. Coalescing Equivalence Groups ───
+    // ─── Coalescing equivalence groups ───
     let mut coalesce_groups = CoalesceGroups::new(func.num_vregs());
-    let mut group_alloc = HashMap::new();
-
+    let mut group_alloc: HashMap<usize, PReg> = HashMap::new();
     for inst in 0..num_insts {
         if func.is_copy(inst) {
             let ops = func.inst_operands(inst);
-            if ops.len() >= 2 {
-                let dst = ops[0].var;
-                let src = ops[1].var;
-                coalesce_groups.union(dst.0 as usize, src.0 as usize);
+            if ops.len() >= 2 && ops[0].var.class == ops[1].var.class {
+                coalesce_groups.union(ops[0].var.id as usize, ops[1].var.id as usize);
             }
         } else if func.is_phi(inst) {
             let ops = func.inst_operands(inst);
             if let Some(first_op) = ops.first() {
                 if matches!(first_op.kind, OperandKind::Def) {
                     let dst = first_op.var;
-                    let b_dst = inst_block[inst];
+                    let b_dst = ctx.inst_block[inst];
                     for &pred_b in func.block_predecessors(b_dst) {
                         let src = func.phi_op(inst, pred_b);
-                        coalesce_groups.union(dst.0 as usize, src.0 as usize);
+                        if src.class == dst.class {
+                            coalesce_groups.union(dst.id as usize, src.id as usize);
+                        }
                     }
                 }
             }
         }
     }
 
-    // ─── 3. Allocation Core State ───
-    let mut active = HashMap::new();
-    let mut future_active: HashMap<PReg, HashSet<Var>> = HashMap::new();
-    let mut vreg_alloc = HashMap::new();
+    // ─── Allocation core state ───
+    let mut active: HashMap<PReg, Var> = HashMap::new();
+    let mut future_active: HashMap<PReg, HashSet<Occupant>> = HashMap::new();
+    let mut vreg_alloc: HashMap<Var, Allocation> = HashMap::new();
 
     for (&v, &slot) in spilled_vars {
         vreg_alloc.insert(v, Allocation::Stack(slot));
     }
 
-    // Precompute fixed_insts: for each PReg, the instructions where some operand
-    // has a Fixed(preg) constraint. Used by `live_conflict` to detect that a
-    // register is implicitly "in use" at those points by the fixup mov sequence.
-    let mut fixed_insts: HashMap<PReg, Vec<usize>> = HashMap::new();
+    // Pre-allocate every clobber site as a point-reservation on its preg.
+    for (&preg, clob_insts) in clobbered_insts {
+        let set = future_active.entry(preg).or_default();
+        for &ci in clob_insts {
+            set.insert(Occupant::Clobber(ci));
+        }
+    }
+
+    // Pre-allocate every fixed-operand site, and additionally try to enqueue
+    // the variable itself (§3.5) so allocate_register can pull the register
+    // assignment for free when the var's turn comes.
     for inst in 0..num_insts {
         let mut seen: HashSet<PReg> = HashSet::new();
         for op in func.inst_operands(inst) {
-            if let Constraint::Fixed(p) = op.constraint {
-                if seen.insert(p) {
-                    fixed_insts.entry(p).or_default().push(inst);
+            if let Constraint::Fixed(preg) = op.constraint {
+                if seen.insert(preg) {
+                    future_active.entry(preg).or_default().insert(Occupant::Fixed(inst));
                 }
             }
         }
     }
-
-    // Pre-allocate fixed constraints into future_active so AllocateRegister can
-    // pull the assignment for free (paper §3.5). The paper's §3.4 invariant is
-    // enforced two ways:
-    //   1. `live_conflict` ensures preg is genuinely safe for v's lifetime —
-    //      no foreign clobber/fixed-use of preg crosses v.
-    //   2. We also refuse to add v if anything already in future_active[preg]
-    //      lives at the same time as v.
     for inst in 0..num_insts {
         for op in func.inst_operands(inst) {
             if let Constraint::Fixed(preg) = op.constraint {
-                if spilled_vars.contains_key(&op.var) {
+                let v = op.var;
+                if spilled_vars.contains_key(&v) {
                     continue;
                 }
                 if future_active
                     .get(&preg)
-                    .map_or(false, |s| s.contains(&op.var))
+                    .map_or(false, |s| s.contains(&Occupant::Var(v)))
                 {
                     continue;
                 }
-                if live_conflict(
-                    op.var,
-                    preg,
-                    func,
-                    &live_ins,
-                    &live_outs,
-                    &uses,
-                    &var_defs,
-                    &inst_block,
-                    clobbered_insts,
-                    &fixed_insts,
-                ) {
+                let conflicts = future_active.get(&preg).map_or(false, |occs| {
+                    occs.iter().any(|&occ| ctx.occupant_conflicts_var(v, preg, occ))
+                });
+                if conflicts {
                     continue;
                 }
-                let overlaps_existing = future_active
-                    .get(&preg)
-                    .map(|occs| {
-                        occs.iter().any(|&u| {
-                            live_at_the_same_time(
-                                op.var,
-                                u,
-                                func,
-                                &live_ins,
-                                &live_outs,
-                                &uses,
-                                &var_defs,
-                                &inst_block,
-                            )
-                        })
-                    })
-                    .unwrap_or(false);
-                if overlaps_existing {
-                    continue;
-                }
-                future_active.entry(preg).or_default().insert(op.var);
+                future_active.entry(preg).or_default().insert(Occupant::Var(v));
             }
         }
     }
 
-    let mut visited = HashSet::new();
+    let mut visited: HashSet<usize> = HashSet::new();
 
     for cur in 0..num_blocks {
-        let live_ins_cur = &live_ins[cur];
+        let live_ins_cur = &ctx.live_ins[cur];
 
-        // Expire active registers
-        let mut to_pause = Vec::new();
-        let mut to_free = Vec::new();
+        // Expire / pause active registers across the block boundary.
+        let mut to_pause: Vec<(PReg, Var)> = Vec::new();
+        let mut to_free: Vec<(PReg, Var)> = Vec::new();
         for (&preg, &v) in &active {
             if !live_ins_cur.contains(&v) {
                 let is_live_in_future = (0..num_blocks)
                     .filter(|&b| !visited.contains(&b))
-                    .any(|b| live_ins[b].contains(&v));
+                    .any(|b| ctx.live_ins[b].contains(&v));
                 if is_live_in_future {
                     to_pause.push((preg, v));
                 } else {
@@ -435,13 +760,13 @@ fn allocate_attempt<F: AllocFunction>(
         }
         for (preg, v) in to_pause {
             active.remove(&preg);
-            future_active.entry(preg).or_default().insert(v);
+            future_active.entry(preg).or_default().insert(Occupant::Var(v));
         }
         for (preg, _) in to_free {
             active.remove(&preg);
         }
 
-        // Start intervals for live-ins
+        // Start intervals for live-ins.
         for &v in live_ins_cur {
             if spilled_vars.contains_key(&v) {
                 continue;
@@ -449,33 +774,21 @@ fn allocate_attempt<F: AllocFunction>(
             if active.values().any(|&x| x == v) {
                 continue;
             }
-            allocate_register(
-                cur,
+            ctx.allocate_register(
                 v,
+                func.block_instructions(cur).start * 2,
                 &mut active,
                 &mut future_active,
                 &mut vreg_alloc,
-                allocatable_regs,
-                func,
-                &live_ins,
-                &live_outs,
-                &uses,
-                &var_defs,
-                &inst_block,
-                clobbered_insts,
-                &fixed_insts,
-                pinned_vars,
-                func.block_instructions(cur).start * 2,
                 &mut coalesce_groups,
                 &mut group_alloc,
             )?;
         }
 
-        // Iterate instructions inside the block
         for inst in func.block_instructions(cur) {
             let inst_flat = inst * 2 + 1;
 
-            // Expire inputs
+            // Expire / pause inputs.
             for op in func.inst_operands(inst) {
                 if matches!(op.kind, OperandKind::Use) {
                     let v = op.var;
@@ -483,16 +796,15 @@ fn allocate_attempt<F: AllocFunction>(
                         continue;
                     }
                     if let Some(&preg) = active.iter().find(|&(_, &x)| x == v).map(|(r, _)| r) {
-                        let has_uses_after = uses.get(&v).map_or(false, |ul| {
+                        let has_uses_after = ctx.uses.get(&v).map_or(false, |ul| {
                             ul.iter().any(|&uf| uf >= inst_flat + 1)
                         });
                         let is_live_in_future = (0..num_blocks)
                             .filter(|&b| !visited.contains(&b))
-                            .any(|b| live_ins[b].contains(&v));
-
+                            .any(|b| ctx.live_ins[b].contains(&v));
                         if has_uses_after || is_live_in_future {
                             active.remove(&preg);
-                            future_active.entry(preg).or_default().insert(v);
+                            future_active.entry(preg).or_default().insert(Occupant::Var(v));
                         } else {
                             active.remove(&preg);
                         }
@@ -500,30 +812,19 @@ fn allocate_attempt<F: AllocFunction>(
                 }
             }
 
-            // Allocate registers for defs
+            // Allocate registers for defs.
             for op in func.inst_operands(inst) {
                 if matches!(op.kind, OperandKind::Def) {
                     let v = op.var;
                     if spilled_vars.contains_key(&v) {
                         continue;
                     }
-                    allocate_register(
-                        cur,
+                    ctx.allocate_register(
                         v,
+                        inst_flat,
                         &mut active,
                         &mut future_active,
                         &mut vreg_alloc,
-                        allocatable_regs,
-                        func,
-                        &live_ins,
-                        &live_outs,
-                        &uses,
-                        &var_defs,
-                        &inst_block,
-                        clobbered_insts,
-                        &fixed_insts,
-                        pinned_vars,
-                        inst_flat,
                         &mut coalesce_groups,
                         &mut group_alloc,
                     )?;
@@ -534,40 +835,64 @@ fn allocate_attempt<F: AllocFunction>(
         visited.insert(cur);
     }
 
-    // ─── 4. Build Output and Insert Spill/Fill moves (Option B) ───
-    let mut inst_allocs = vec![Vec::new(); num_insts];
+    // ─── Build output and insert spill/fill + fixup moves ───
+    let mut inst_allocs: Vec<Vec<Allocation>> = vec![Vec::new(); num_insts];
     let mut edits_before: HashMap<usize, Vec<AllocMove>> = HashMap::new();
     let mut edits_after: HashMap<usize, Vec<AllocMove>> = HashMap::new();
 
-    let scratch_regs_list = func.scratch_regs();
+    // Partition scratch regs by class so shuttling preserves operand class.
+    let mut scratch_by_class: HashMap<RegClass, Vec<PReg>> = HashMap::new();
+    for &p in func.scratch_regs() {
+        scratch_by_class.entry(p.class).or_default().push(p);
+    }
+    // Take the next available scratch of `class`, or None if exhausted.
+    let mut take_scratch = |used: &mut HashMap<RegClass, usize>, class: RegClass| -> Option<PReg> {
+        let idx = used.entry(class).or_insert(0);
+        let pool = scratch_by_class.get(&class)?;
+        if *idx >= pool.len() {
+            return None;
+        }
+        let preg = pool[*idx];
+        *idx += 1;
+        Some(preg)
+    };
 
     for inst in 0..num_insts {
-        let mut allocs = Vec::new();
-        for op in func.inst_operands(inst) {
-            let alloc = vreg_alloc.get(&op.var).copied().unwrap_or(Allocation::Reg(PReg(0)));
-            allocs.push(alloc);
-        }
+        let mut allocs: Vec<Allocation> = func
+            .inst_operands(inst)
+            .iter()
+            .map(|op| {
+                vreg_alloc
+                    .get(&op.var)
+                    .copied()
+                    .unwrap_or(Allocation::Reg(PReg::new(0, op.var.class)))
+            })
+            .collect();
 
-        let mut scratch_idx = 0;
-        let mut target_regs = HashSet::new();
-        for (i, op) in func.inst_operands(inst).iter().enumerate() {
-            if op.kind == OperandKind::Use {
-                if let Constraint::Fixed(preg) = op.constraint {
-                    if allocs[i] != Allocation::Reg(preg) {
-                        target_regs.insert(preg);
-                    }
+        let mut scratch_used: HashMap<RegClass, usize> = HashMap::new();
+
+        // Pregs that a Fixed-use intends to occupy via a fixup move.
+        let target_regs: HashSet<PReg> = func
+            .inst_operands(inst)
+            .iter()
+            .enumerate()
+            .filter_map(|(i, op)| match (op.kind, op.constraint) {
+                (OperandKind::Use, Constraint::Fixed(preg))
+                    if allocs[i] != Allocation::Reg(preg) =>
+                {
+                    Some(preg)
                 }
-            }
-        }
+                _ => None,
+            })
+            .collect();
 
+        // Shuttle any use currently sitting in one of those target pregs
+        // out to a scratch so the fixup move below doesn't clobber it.
         for (i, op) in func.inst_operands(inst).iter().enumerate() {
             if op.kind == OperandKind::Use {
                 if let Allocation::Reg(curr_preg) = allocs[i] {
                     if target_regs.contains(&curr_preg) {
-                        if scratch_idx < scratch_regs_list.len() {
-                            let scratch = scratch_regs_list[scratch_idx];
-                            scratch_idx += 1;
-                            
+                        if let Some(scratch) = take_scratch(&mut scratch_used, op.var.class) {
                             edits_before.entry(inst).or_default().push(AllocMove {
                                 from: allocs[i],
                                 to: Allocation::Reg(scratch),
@@ -579,6 +904,7 @@ fn allocate_attempt<F: AllocFunction>(
             }
         }
 
+        // Emit Fixed-constraint fixup moves.
         for (i, op) in func.inst_operands(inst).iter().enumerate() {
             if let Constraint::Fixed(preg) = op.constraint {
                 let curr_alloc = allocs[i];
@@ -602,29 +928,39 @@ fn allocate_attempt<F: AllocFunction>(
             }
         }
 
-        if !func.is_valid_combination(inst, &allocs) {
-            for (i, op) in func.inst_operands(inst).iter().enumerate() {
-                if let Allocation::Stack(slot) = allocs[i] {
-                    if scratch_idx < scratch_regs_list.len() {
-                        let scratch = scratch_regs_list[scratch_idx];
-                        scratch_idx += 1;
-                        
-                        allocs[i] = Allocation::Reg(scratch);
-                        match op.kind {
-                            OperandKind::Use => {
-                                edits_before.entry(inst).or_default().push(AllocMove {
-                                    from: Allocation::Stack(slot),
-                                    to: Allocation::Reg(scratch),
-                                });
-                            }
-                            OperandKind::Def => {
-                                edits_after.entry(inst).or_default().push(AllocMove {
-                                    from: Allocation::Reg(scratch),
-                                    to: Allocation::Stack(slot),
-                                });
-                            }
-                        }
-                    }
+        // Spill/fill: every stack-resident operand goes through a scratch
+        // register so codegen always sees `inst_allocs[i] = Reg(_)`. A use
+        // gets a Stack→Reg load before the instruction; a def gets a
+        // Reg→Stack store after.
+        //
+        // When the same spilled var appears multiple times in one
+        // instruction, reuse the scratch — one load suffices for repeated
+        // uses, and a use+def of the same var shares one slot↔reg pair.
+        let mut spill_scratch: HashMap<SpillSlot, PReg> = HashMap::new();
+        for (i, op) in func.inst_operands(inst).iter().enumerate() {
+            let Allocation::Stack(slot) = allocs[i] else { continue };
+            let scratch = if let Some(&existing) = spill_scratch.get(&slot) {
+                existing
+            } else {
+                let Some(s) = take_scratch(&mut scratch_used, op.var.class) else {
+                    continue;
+                };
+                spill_scratch.insert(slot, s);
+                s
+            };
+            allocs[i] = Allocation::Reg(scratch);
+            match op.kind {
+                OperandKind::Use => {
+                    edits_before.entry(inst).or_default().push(AllocMove {
+                        from: Allocation::Stack(slot),
+                        to: Allocation::Reg(scratch),
+                    });
+                }
+                OperandKind::Def => {
+                    edits_after.entry(inst).or_default().push(AllocMove {
+                        from: Allocation::Reg(scratch),
+                        to: Allocation::Stack(slot),
+                    });
                 }
             }
         }
@@ -632,344 +968,12 @@ fn allocate_attempt<F: AllocFunction>(
         inst_allocs[inst] = allocs;
     }
 
-
     Ok(AllocationAttemptResult {
         vreg_alloc,
         inst_allocs,
         edits_before,
         edits_after,
     })
-}
-
-fn allocate_register<F: AllocFunction>(
-    _cur_block: usize,
-    v: Var,
-    active: &mut HashMap<PReg, Var>,
-    future_active: &mut HashMap<PReg, HashSet<Var>>,
-    vreg_alloc: &mut HashMap<Var, Allocation>,
-    allocatable_regs: &[PReg],
-    func: &F,
-    live_ins: &[HashSet<Var>],
-    live_outs: &[HashSet<Var>],
-    uses: &HashMap<Var, Vec<usize>>,
-    var_defs: &HashMap<Var, Vec<usize>>,
-    inst_block: &[usize],
-    clobbered_insts: &HashMap<PReg, Vec<usize>>,
-    fixed_insts: &HashMap<PReg, Vec<usize>>,
-    pinned_vars: &HashSet<Var>,
-    current_inst_flat: usize,
-    coalesce_groups: &mut CoalesceGroups,
-    group_alloc: &mut HashMap<usize, PReg>,
-) -> Result<(), VarToSpill> {
-    // 0. Reuse existing register assignment (global consistency: a paused or
-    //    previously-allocated var must come back into the same preg).
-    if let Some(&Allocation::Reg(preg)) = vreg_alloc.get(&v) {
-        if let Some(occs) = future_active.get_mut(&preg) {
-            occs.remove(&v);
-        }
-        active.insert(preg, v);
-        let rep = coalesce_groups.find(v.0 as usize);
-        group_alloc.insert(rep, preg);
-        return Ok(());
-    }
-
-    // 1. Pulled from future-active (paper Algorithm 4).
-    let mut pulled = None;
-    for (&preg, vars) in future_active.iter_mut() {
-        if vars.contains(&v) {
-            vars.remove(&v);
-            pulled = Some(preg);
-            break;
-        }
-    }
-    if let Some(preg) = pulled {
-        active.insert(preg, v);
-        vreg_alloc.insert(v, Allocation::Reg(preg));
-        let rep = coalesce_groups.find(v.0 as usize);
-        group_alloc.insert(rep, preg);
-        return Ok(());
-    }
-
-    let preg_conflict = |preg: PReg,
-                         active: &HashMap<PReg, Var>,
-                         future_active: &HashMap<PReg, HashSet<Var>>|
-     -> bool {
-        // Paper §3.4 invariant: cannot place v in preg if any current
-        // occupant of active[preg] ∪ future_active[preg] is live at the
-        // same time as v.
-        if let Some(&u) = active.get(&preg) {
-            if live_at_the_same_time(v, u, func, live_ins, live_outs, uses, var_defs, inst_block) {
-                return true;
-            }
-        }
-        if let Some(f_vars) = future_active.get(&preg) {
-            for &u in f_vars {
-                if live_at_the_same_time(v, u, func, live_ins, live_outs, uses, var_defs, inst_block) {
-                    return true;
-                }
-            }
-        }
-        // Also: preg may be implicitly required (clobber or fixed-op fixup) at
-        // some instruction along v's lifetime, even when no other variable is
-        // pre-allocated to it. live_conflict catches that.
-        if live_conflict(
-            v,
-            preg,
-            func,
-            live_ins,
-            live_outs,
-            uses,
-            var_defs,
-            inst_block,
-            clobbered_insts,
-            fixed_insts,
-        ) {
-            return true;
-        }
-        false
-    };
-
-    // 2. Prefer the coalesce group's existing register, when safe.
-    let rep = coalesce_groups.find(v.0 as usize);
-    if let Some(&pref_preg) = group_alloc.get(&rep) {
-        if allocatable_regs.contains(&pref_preg)
-            && !preg_conflict(pref_preg, active, future_active)
-        {
-            active.insert(pref_preg, v);
-            vreg_alloc.insert(v, Allocation::Reg(pref_preg));
-            return Ok(());
-        }
-    }
-
-    // 3. Pick the lowest-cost free register.
-    let mut best_preg = None;
-    let mut best_cost = i32::MAX;
-    for &preg in allocatable_regs {
-        if preg_conflict(preg, active, future_active) {
-            continue;
-        }
-        let cost = 0;
-        if cost < best_cost {
-            best_cost = cost;
-            best_preg = Some(preg);
-        }
-    }
-
-    if let Some(preg) = best_preg {
-        active.insert(preg, v);
-        vreg_alloc.insert(v, Allocation::Reg(preg));
-        group_alloc.insert(rep, preg);
-        Ok(())
-    } else {
-        let spill_cand = select_spill_candidate(active, v, pinned_vars, uses, current_inst_flat);
-        Err(VarToSpill(spill_cand))
-    }
-}
-
-fn select_spill_candidate(
-    active: &HashMap<PReg, Var>,
-    failing_var: Var,
-    pinned_vars: &HashSet<Var>,
-    uses: &HashMap<Var, Vec<usize>>,
-    current_inst_flat: usize,
-) -> Var {
-    let mut candidates = Vec::new();
-    if !pinned_vars.contains(&failing_var) {
-        candidates.push(failing_var);
-    }
-    for &v in active.values() {
-        if !pinned_vars.contains(&v) {
-            candidates.push(v);
-        }
-    }
-
-    if candidates.is_empty() {
-        // Fallback in case everything is pinned
-        return failing_var;
-    }
-
-    let mut best_cand = candidates[0];
-    let mut furthest_use = 0;
-
-    for cand in candidates {
-        let next_use = uses.get(&cand).map_or(usize::MAX, |ul| {
-            ul.iter().copied().find(|&uf| uf >= current_inst_flat).unwrap_or(usize::MAX)
-        });
-        if next_use > furthest_use {
-            furthest_use = next_use;
-            best_cand = cand;
-        }
-    }
-
-    best_cand
-}
-
-fn is_live_at<F: AllocFunction>(
-    v: Var,
-    inst: usize,
-    func: &F,
-    live_ins: &[HashSet<Var>],
-    live_outs: &[HashSet<Var>],
-    uses: &HashMap<Var, Vec<usize>>,
-    var_defs: &HashMap<Var, Vec<usize>>,
-    inst_block: &[usize],
-) -> bool {
-    if inst >= inst_block.len() {
-        return false;
-    }
-    let b = inst_block[inst];
-    let range = func.block_instructions(b);
-
-    if live_outs[b].contains(&v) {
-        if let Some(defs) = var_defs.get(&v) {
-            if let Some(&def_flat) = defs.iter().find(|&&df| inst_block[df / 2] == b) {
-                let def_inst = def_flat / 2;
-                return inst >= def_inst;
-            }
-        }
-        return true;
-    } else {
-        let def_in_b = var_defs.get(&v).and_then(|defs| {
-            defs.iter().copied().find(|&def_flat| {
-                let def_inst = def_flat / 2;
-                def_inst >= range.start && def_inst < range.end
-            })
-        });
-
-        if let Some(def_flat) = def_in_b {
-            let def_inst = def_flat / 2;
-            if inst < def_inst {
-                return false;
-            }
-        } else if !live_ins[b].contains(&v) {
-            return false;
-        }
-
-        // Check if there is a use at or after inst in this block
-        if let Some(uses_list) = uses.get(&v) {
-            let start_flat = inst * 2 + 1;
-            let end_flat = (range.end - 1) * 2 + 1;
-            return uses_list.iter().any(|&uf| uf >= start_flat && uf <= end_flat);
-        }
-    }
-    false
-}
-
-fn live_at_the_same_time(
-    lhs: Var,
-    rhs: Var,
-    _func: &impl AllocFunction,
-    live_ins: &[HashSet<Var>],
-    live_outs: &[HashSet<Var>],
-    uses: &HashMap<Var, Vec<usize>>,
-    var_defs: &HashMap<Var, Vec<usize>>,
-    inst_block: &[usize],
-) -> bool {
-    let empty = Vec::new();
-    let lhs_defs = var_defs.get(&lhs).unwrap_or(&empty);
-    let rhs_defs = var_defs.get(&rhs).unwrap_or(&empty);
-
-    if lhs_defs.is_empty() || rhs_defs.is_empty() {
-        return false;
-    }
-
-    // Check if they share any definition block
-    for &def_l in lhs_defs {
-        let b_l = inst_block[def_l / 2];
-        for &def_r in rhs_defs {
-            let b_r = inst_block[def_r / 2];
-            if b_l == b_r {
-                if live_at_the_same_time_same_block(lhs, rhs, b_l, live_outs, uses, def_l, def_r) {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // Check across different blocks
-    for &def_l in lhs_defs {
-        let b_l = inst_block[def_l / 2];
-        if live_at_the_same_time_in_block(lhs, rhs, b_l, live_ins, live_outs, uses, def_l) {
-            return true;
-        }
-    }
-
-    for &def_r in rhs_defs {
-        let b_r = inst_block[def_r / 2];
-        if live_at_the_same_time_in_block(rhs, lhs, b_r, live_ins, live_outs, uses, def_r) {
-            return true;
-        }
-    }
-
-    false
-}
-
-fn live_at_the_same_time_same_block(
-    lhs: Var,
-    rhs: Var,
-    block: usize,
-    live_outs: &[HashSet<Var>],
-    uses: &HashMap<Var, Vec<usize>>,
-    lhs_def_flat: usize,
-    rhs_def_flat: usize,
-) -> bool {
-    let lhs_live_out = live_outs[block].contains(&lhs);
-    let rhs_live_out = live_outs[block].contains(&rhs);
-
-    if lhs_live_out && rhs_live_out {
-        return true;
-    } else if !lhs_live_out && !rhs_live_out {
-        let (first, last_def_flat) = if lhs_def_flat < rhs_def_flat {
-            (lhs, rhs_def_flat)
-        } else {
-            (rhs, lhs_def_flat)
-        };
-        if let Some(first_uses) = uses.get(&first) {
-            for &u_flat in first_uses {
-                if u_flat > last_def_flat {
-                    return true;
-                }
-            }
-        }
-    } else {
-        let (non_live_out, live_out_def_flat) = if lhs_live_out {
-            (rhs, lhs_def_flat)
-        } else {
-            (lhs, rhs_def_flat)
-        };
-        if let Some(uses_list) = uses.get(&non_live_out) {
-            for &u_flat in uses_list {
-                if u_flat > live_out_def_flat {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
-fn live_at_the_same_time_in_block(
-    _lhs: Var,
-    rhs: Var,
-    lhs_block: usize,
-    live_ins: &[HashSet<Var>],
-    live_outs: &[HashSet<Var>],
-    uses: &HashMap<Var, Vec<usize>>,
-    lhs_def_flat: usize,
-) -> bool {
-    if live_ins[lhs_block].contains(&rhs) {
-        if live_outs[lhs_block].contains(&rhs) {
-            return true;
-        }
-        if let Some(rhs_uses) = uses.get(&rhs) {
-            for &u_flat in rhs_uses {
-                if u_flat > lhs_def_flat {
-                    return true;
-                }
-            }
-        }
-    }
-    false
 }
 
 struct CoalesceGroups {
@@ -1005,4 +1009,3 @@ impl CoalesceGroups {
         }
     }
 }
-

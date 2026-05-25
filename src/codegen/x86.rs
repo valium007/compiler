@@ -156,29 +156,21 @@ fn emit_one_fn(asm: &mut String, fn_name: &str, entry_bb: usize, blocks: &[Vec<L
 fn emit_instruction(asm: &mut String, inst: &LoweredInst, entry_bb: usize) {
     match inst {
         LoweredInst::Mov(dst, src) => {
+            // (C)'s spill edits and the phi resolver both pre-shuttle any
+            // Stack→Stack pair through a scratch before emitting LoweredInst,
+            // so codegen only ever sees Reg→Reg, Reg→Stack, or Stack→Reg —
+            // each a single x86 `mov`.
             let d = alloc_operand(*dst);
             let s = alloc_operand(*src);
             if d != s {
-                // If both are memory (spill slot), we need a temp register.
-                // regalloc2 should not produce mem→mem moves, but just in case:
-                if dst.is_stack() && src.is_stack() {
-                    asm.push_str(&format!("    mov r11, {}\n", s));
-                    asm.push_str(&format!("    mov {}, r11\n", d));
-                } else {
-                    asm.push_str(&format!("    mov {}, {}\n", d, s));
-                }
+                asm.push_str(&format!("    mov {}, {}\n", d, s));
             }
         }
 
         LoweredInst::LoadConst(dst, imm) => {
+            // dst comes from inst_allocs and is always Reg after (C).
             let d = alloc_operand(*dst);
-            if dst.is_stack() {
-                // mov mem64, imm is limited to sign-extended imm32.
-                // Always route through a scratch register for safety.
-                asm.push_str(&format!("    movabs r11, {}\n", imm));
-                asm.push_str(&format!("    mov {}, r11\n", d));
-            } else if *imm < i32::MIN as i64 || *imm > i32::MAX as i64 {
-                // imm doesn't fit in 32 bits → need movabs for a register.
+            if *imm < i32::MIN as i64 || *imm > i32::MAX as i64 {
                 asm.push_str(&format!("    movabs {}, {}\n", d, imm));
             } else {
                 asm.push_str(&format!("    mov {}, {}\n", d, imm));
@@ -261,9 +253,19 @@ fn emit_binary(asm: &mut String, op: BinaryOp, dst: Allocation, lhs: Allocation,
                 _ => unreachable!(),
             };
             if d == r && d != l {
-                asm.push_str(&format!("    mov r11, {}\n", l));
-                asm.push_str(&format!("    {} r11, {}\n", mnemonic, r));
-                asm.push_str(&format!("    mov {}, r11\n", d));
+                // dst shares the rhs preg.  Add/And/Or are commutative, so
+                // `OP d, l` computes d = old_d OP l = rhs OP l = l OP rhs
+                // — no temp needed.  Sub is not commutative; `neg d`
+                // negates rhs in place, then `add d, l` gives l - rhs.
+                match op {
+                    BinaryOp::Sub => {
+                        asm.push_str(&format!("    neg {}\n", d));
+                        asm.push_str(&format!("    add {}, {}\n", d, l));
+                    }
+                    _ => {
+                        asm.push_str(&format!("    {} {}, {}\n", mnemonic, d, l));
+                    }
+                }
             } else {
                 if d != l {
                     asm.push_str(&format!("    mov {}, {}\n", d, l));
@@ -273,19 +275,12 @@ fn emit_binary(asm: &mut String, op: BinaryOp, dst: Allocation, lhs: Allocation,
         }
 
         BinaryOp::Mul => {
-            // Safety net: the regalloc constrains imul's destination to a
-            // register (Constraint::Reg), so `dst.is_stack()` should never
-            // hold here.  Kept as a fallback in case the constraint is
-            // weakened or the allocator's pin-fallback (select_spill_candidate)
-            // is ever forced to spill an otherwise-pinned var.
-            if dst.is_stack() {
-                asm.push_str(&format!("    mov r11, {}\n", l));
-                asm.push_str(&format!("    imul r11, {}\n", r));
-                asm.push_str(&format!("    mov {}, r11\n", d));
-            } else if d == r && d != l {
-                asm.push_str(&format!("    mov r11, {}\n", l));
-                asm.push_str(&format!("    imul r11, {}\n", r));
-                asm.push_str(&format!("    mov {}, r11\n", d));
+            // dst is always Reg after (C). When dst shares the rhs preg, we
+            // can't `mov d, l` first (would clobber rhs before we read it),
+            // but `imul` is commutative — `imul d, l` computes
+            // d = old_d * l = rhs * l = l * rhs, no temp needed.
+            if d == r {
+                asm.push_str(&format!("    imul {}, {}\n", d, l));
             } else {
                 if d != l {
                     asm.push_str(&format!("    mov {}, {}\n", d, l));

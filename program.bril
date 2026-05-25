@@ -1,226 +1,51 @@
-@leaf1(x: int): int {
-  seed: int = const 972;
-  base: int = const 130;
-  t0: int = mul seed base;
-  d1: int = const 3;
-  t1: int = div t0 d1;
-  t2: int = mul t1 t0;
-  d3: int = const 3;
-  t3: int = div t2 d3;
-  t4: int = mul t3 t2;
-  d5: int = const 8;
-  t5: int = div t4 d5;
-  d6: int = const 2;
-  t6: int = div t5 d6;
-  d7: int = const 2;
-  t7: int = div t6 d7;
-  ret t7;
-}
+# Forces spill across a call site.  Ten values (v1..v10) are defined before
+# the call and used after, so all ten must live across it.  Only five
+# callee-saved GPRs are available on x86-64 SysV (RBX, R12, R13, R14, R15),
+# so at least five must be spilled to the stack.
+#
+# In the generated assembly you should see, around the `call @square` site:
+#   - `mov [rbp - N], reg`  store edits before the call (spill stores)
+#   - `mov reg, [rbp - N]`  load edits after the call (fill reloads)
+# and the spilled values living in stack slots between defs and uses.
+#
+# Expected output: 100*100 + (1+2+3+4+5+6+7+8+9+10) = 10000 + 55 = 10055
 
-@leaf2(x: int): int {
-  seed: int = const 507;
-  base: int = const 969;
-  t0: int = mul x seed;
-  t1: int = mul t0 x;
-  d2: int = const 8;
-  t2: int = div t1 d2;
-  d3: int = const 5;
-  t3: int = div t2 d3;
-  d4: int = const 9;
-  t4: int = div t3 d4;
-  t5: int = mul t4 t3;
-  d6: int = const 6;
-  t6: int = div t5 d6;
-  d7: int = const 2;
-  t7: int = div t6 d7;
-  t8: int = mul t7 t6;
-  diff: int = sub seed base;
-  ret diff;
-}
-
-@leaf3(x: int): int {
-  seed: int = const 357;
-  base: int = const 119;
-  d0: int = const 5;
-  t0: int = div seed d0;
-  d1: int = const 7;
-  t1: int = div t0 d1;
-  d2: int = const 3;
-  t2: int = div t1 d2;
-  t3: int = mul t2 t1;
-  t4: int = mul t3 t2;
-  d5: int = const 3;
-  t5: int = div t4 d5;
-  ret t5;
-}
-
-@mid1(x: int): int {
-  p0: int = const 862;
-  pd0: int = const 7;
-  n0: int = div p0 pd0;
-  p1: int = const 933;
-  pd1: int = const 3;
-  n1: int = div p1 pd1;
-  n2: int = mul n0 n1;
-  pd2: int = const 2;
-  n3: int = div n2 pd2;
-  n4: int = mul n3 n0;
-  pd3: int = const 5;
-  n5: int = div n4 pd3;
-
-  px0: int = const 201;
-  pxd0: int = const 6;
-  pn0: int = div px0 pxd0;
-  pn1: int = mul pn0 n3;
-  arg0: int = sub pn1 x;
-  r0: int = call @leaf1 arg0;
-
-  pp0: int = const 545;
-  ppd0: int = const 7;
-  ppn0: int = div pp0 ppd0;
-  ppn1: int = mul ppn0 n5;
-  ppd1: int = const 2;
-  ppn2: int = div ppn1 ppd1;
-  ppn3: int = mul ppn2 ppn0;
-  arg1: int = add ppn3 x;
-  r1: int = call @leaf2 arg1;
-
-  result: int = add r1 r0;
-  ret result;
-}
-
-@mid2(x: int): int {
-  p0: int = const 429;
-  p1: int = const 950;
-  pd0: int = const 6;
-  n0: int = div p0 pd0;
-  n1: int = mul n0 p1;
-  pd1: int = const 3;
-  n2: int = div n1 pd1;
-  n3: int = mul n2 n0;
-  pd2: int = const 7;
-  n4: int = div n3 pd2;
-  n5: int = mul n4 n2;
-  pd3: int = const 2;
-  n6: int = div n5 pd3;
-
-  arg0: int = add x n4;
-  r0: int = call @leaf2 arg0;
-
-  ic0: int = const 912;
-  icd0: int = const 4;
-  in0: int = div ic0 icd0;
-  in1: int = mul in0 n6;
-  icd1: int = const 8;
-  in2: int = div in1 icd1;
-  in3: int = mul in2 in0;
-  icd2: int = const 3;
-  in4: int = div in3 icd2;
-  arg1: int = add in4 n0;
-  r1: int = call @leaf3 arg1;
-
-  xc0: int = const 87;
-  xcd0: int = const 5;
-  xn0: int = div xc0 xcd0;
-  xn1: int = mul xn0 in4;
-  xn2: int = mul xn1 n2;
-  r2: int = call @leaf1 xc0;
-
-  e0: int = add r2 r0;
-  e1: int = add e0 r1;
-  ret e1;
-}
-
-@top1(x: int): int {
-  p0: int = const 957;
-  pd0: int = const 3;
-  n0: int = div p0 pd0;
-  p1: int = const 898;
-  n1: int = mul n0 p1;
-  pd1: int = const 4;
-  n2: int = div n1 pd1;
-  pd2: int = const 7;
-  n3: int = div p0 pd2;
-  n4: int = mul n3 n2;
-  pd3: int = const 5;
-  n5: int = div n4 pd3;
-
-  pn0: int = mul n5 n3;
-  pd4: int = const 6;
-  pn1: int = div pn0 pd4;
-  pn2: int = mul pn1 n0;
-  arg0: int = add pn2 x;
-  r0: int = call @mid1 arg0;
-
-  ic0: int = const 738;
-  icd0: int = const 4;
-  in0: int = div ic0 icd0;
-  in1: int = mul in0 n5;
-  icd1: int = const 3;
-  in2: int = div in1 icd1;
-  in3: int = mul in2 in0;
-  icd2: int = const 2;
-  in4: int = div in3 icd2;
-  in5: int = mul in4 pn2;
-  arg1: int = add in5 x;
-  r1: int = call @mid2 arg1;
-
-  result: int = add r1 r0;
-  ret result;
-}
-
-@top2(x: int): int {
-  p0: int = const 906;
-  p1: int = const 955;
-  pd0: int = const 4;
-  n0: int = div p0 pd0;
-  pd1: int = const 8;
-  n1: int = div p1 pd1;
-  n2: int = mul n0 n1;
-  pd2: int = const 7;
-  n3: int = div n2 pd2;
-  n4: int = mul n3 n0;
-  pd3: int = const 2;
-  n5: int = div n4 pd3;
-  pd4: int = const 5;
-  n6: int = div n5 pd4;
-  n7: int = mul n6 n3;
-
-  arg0: int = add n7 x;
-  r0: int = call @mid2 arg0;
-
-  ic0: int = const 670;
-  in0: int = mul ic0 n5;
-  icd0: int = const 6;
-  in1: int = div in0 icd0;
-  in2: int = mul in1 n7;
-  icd1: int = const 3;
-  in3: int = div in2 icd1;
-  arg1: int = add in3 x;
-  r1: int = call @leaf3 arg1;
-
-  xc: int = const 63;
-  xcd: int = const 4;
-  xn0: int = div xc xcd;
-  xn1: int = mul xn0 in1;
-  xcd1: int = const 3;
-  xn2: int = div xn1 xcd1;
-  xcd2: int = const 2;
-  xn3: int = div xn2 xcd2;
-  xn4: int = mul xn3 xn0;
-  r2: int = call @mid1 xc;
-
-  e0: int = add r2 r0;
-  e1: int = add e0 r1;
-  ret e1;
+@square(x: int): int {
+  y: int = mul x x;
+  ret y;
 }
 
 @main {
-  n: int = const 240;
-  r1: int = call @top1 n;
-  r2: int = call @top2 n;
-  t: int = add r1 r2;
-  print r1;
-  print r2;
-  print t;
+  v1:  int = const 1;
+  v2:  int = const 2;
+  v3:  int = const 3;
+  v4:  int = const 4;
+  v5:  int = const 5;
+  v6:  int = const 6;
+  v7:  int = const 7;
+  v8:  int = const 8;
+  v9:  int = const 9;
+  v10: int = const 10;
+
+  arg: int = const 100;
+  r:   int = call @square arg;
+r:   int = call @square arg;
+r:   int = call @square arg;
+r:   int = call @square arg;
+r:   int = call @square arg;
+r:   int = call @square arg;
+r:   int = call @square arg;
+
+
+  s1:  int = add r   v1;
+  s2:  int = add s1  v2;
+  s3:  int = add s2  v3;
+  s4:  int = add s3  v4;
+  s5:  int = add s4  v5;
+  s6:  int = add s5  v6;
+  s7:  int = add s6  v7;
+  s8:  int = add s7  v8;
+  s9:  int = add s8  v9;
+  s10: int = add s9  v10;
+  print s10;
 }

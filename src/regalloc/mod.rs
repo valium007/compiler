@@ -91,28 +91,15 @@ pub fn lower_phis_to_parallel_moves(ssa: &mut SsaBuilder) {
 ///   SSA IR → xregalloc → lowered IR
 pub fn run_regalloc(ssa: &SsaBuilder, target: Target) -> (usize, Vec<Vec<LoweredInst>>) {
     // Phase 1: Build the agnostic function adapter directly from SsaBuilder.
-    let (agnostic_func, _mapper) = AgnosticFunc::new(ssa, target);
+    let (agnostic_func, mapper) = AgnosticFunc::new(ssa, target);
 
     // Phase 2: Run our custom machine-agnostic register allocator.
-    let mut allocatable_regs = Vec::new();
-    match target {
-        Target::X86_64 => {
-            for &r in machine_env::x86::CALLER_SAVED {
-                allocatable_regs.push(xregalloc::PReg(r as u32));
-            }
-            for &r in machine_env::x86::CALLEE_SAVED {
-                allocatable_regs.push(xregalloc::PReg(r as u32));
-            }
-        }
-        Target::Aarch64 => {
-            for &r in machine_env::aarch64::CALLER_SAVED {
-                allocatable_regs.push(xregalloc::PReg(r as u32));
-            }
-            for &r in machine_env::aarch64::CALLEE_SAVED {
-                allocatable_regs.push(xregalloc::PReg(r as u32));
-            }
-        }
-    }
+    let (caller, callee): (&[xregalloc::PReg], &[xregalloc::PReg]) = match target {
+        Target::X86_64 => (machine_env::x86::CALLER_SAVED, machine_env::x86::CALLEE_SAVED),
+        Target::Aarch64 => (machine_env::aarch64::CALLER_SAVED, machine_env::aarch64::CALLEE_SAVED),
+    };
+    let allocatable_regs: Vec<xregalloc::PReg> =
+        caller.iter().chain(callee.iter()).copied().collect();
 
     let result = xregalloc::allocate(&agnostic_func, &allocatable_regs)
         .expect("register allocation failed");
@@ -163,10 +150,124 @@ pub fn run_regalloc(ssa: &SsaBuilder, target: Target) -> (usize, Vec<Vec<Lowered
             }
         }
 
+        // ─── Phi resolution at this block's tail (paper §3.1 / Boissinot) ───
+        // For each successor of `b`, look at its phi instructions and emit
+        // moves from each phi operand's allocation (live-out of `b`) to the
+        // phi destination's allocation. The moves form a parallel copy and
+        // are sequentialized to handle swaps and cycles using scratch regs.
+        //
+        // Critical-edge splitting guarantees that any block with phis has
+        // single-successor predecessors, so emitting at this block's tail
+        // unambiguously targets the merge block.
+        emit_phi_resolution(
+            &mut block_insts,
+            ssa,
+            b,
+            &mapper,
+            &result.vreg_alloc,
+            target,
+        );
+
         lowered.push(block_insts);
     }
 
     (result.num_spillslots, lowered)
+}
+
+/// Append phi-resolution moves at the tail of `block_insts`, inserting them
+/// just before the block's terminator (Jmp / Br / Ret).
+fn emit_phi_resolution(
+    block_insts: &mut Vec<LoweredInst>,
+    ssa: &SsaBuilder,
+    b: usize,
+    mapper: &VarMapper,
+    vreg_alloc: &HashMap<xregalloc::Var, xregalloc::Allocation>,
+    target: Target,
+) {
+    let lookup = |var: crate::ssa::ir::SsaVariable| -> regalloc_ir::Allocation {
+        let xv = xregalloc::Var::int(mapper.get_id(var));
+        vreg_alloc.get(&xv).copied().map(map_alloc).unwrap_or_else(|| {
+            // A var with no allocation shouldn't reach phi resolution; if it
+            // does, fall through to register 0 — same defensive default as
+            // the main lowering path.
+            regalloc_ir::Allocation::Reg(regalloc_ir::PhysReg::new(0))
+        })
+    };
+
+    // Collect (src_alloc, dst_alloc) for every phi in every successor.
+    let mut copies: Vec<(regalloc_ir::Allocation, regalloc_ir::Allocation)> = Vec::new();
+    for &succ in &ssa.blocks[b].successors {
+        for inst in &ssa.blocks[succ].instrs {
+            let IrInstruction::PhiAssign(phi) = inst else { continue };
+            let dst_alloc = lookup(phi.var);
+            for &(src_var, from_b) in &phi.operands {
+                if from_b == b {
+                    let src_alloc = lookup(src_var);
+                    copies.push((src_alloc, dst_alloc));
+                    break;
+                }
+            }
+        }
+    }
+
+    if copies.is_empty() {
+        return;
+    }
+
+    // Scratch reservation:
+    //   SCRATCH_REGS[0] — reserved for Stack→Stack expansion below. Codegen
+    //     never sees a memory-to-memory mov; we always shuttle here.
+    //   SCRATCH_REGS[1..] — handed to parallel_move::sequentialize as the
+    //     pool of cycle-break temps.
+    let scratch_src: &[xregalloc::PReg] = match target {
+        Target::X86_64 => machine_env::x86::SCRATCH_REGS,
+        Target::Aarch64 => machine_env::aarch64::SCRATCH_REGS,
+    };
+    let to_alloc = |p: xregalloc::PReg| {
+        regalloc_ir::Allocation::Reg(regalloc_ir::PhysReg::new(p.index as usize))
+    };
+    let stack_shuttle = to_alloc(scratch_src[0]);
+    let cycle_break_pool: Vec<regalloc_ir::Allocation> = scratch_src[1..]
+        .iter()
+        .map(|&p| to_alloc(p))
+        .collect();
+
+    let mut cycle_idx = 0usize;
+    let get_temp = || -> regalloc_ir::Allocation {
+        let t = cycle_break_pool.get(cycle_idx)
+            .copied()
+            .expect("phi resolution: parallel-copy needs more cycle-break temps than scratch pool provides");
+        cycle_idx += 1;
+        t
+    };
+    let seq = crate::ssa::parallel_move::sequentialize(&copies, get_temp);
+
+    // Expand Stack→Stack pairs into Stack→stack_shuttle, stack_shuttle→Stack.
+    // The sequence is already sequential (parallel-copy semantics resolved by
+    // sequentialize), so reusing one shuttle reg across pairs is safe.
+    let mut expanded: Vec<(regalloc_ir::Allocation, regalloc_ir::Allocation)> =
+        Vec::with_capacity(seq.len());
+    for (src, dst) in seq {
+        if src.is_stack() && dst.is_stack() {
+            expanded.push((src, stack_shuttle));
+            expanded.push((stack_shuttle, dst));
+        } else {
+            expanded.push((src, dst));
+        }
+    }
+
+    // Insert before the terminator (last Jmp / Br / Ret), or at the end if
+    // somehow absent.
+    let insert_at = block_insts.iter().rposition(|i| matches!(
+        i,
+        LoweredInst::Jmp(_) | LoweredInst::Br(_, _, _) | LoweredInst::Ret(_)
+    )).unwrap_or(block_insts.len());
+
+    let mut idx = insert_at;
+    for (src, dst) in expanded {
+        block_insts.insert(idx, LoweredInst::Mov(dst, src));
+        idx += 1;
+    }
 }
 
 struct VarMapper {
@@ -188,6 +289,13 @@ impl VarMapper {
             self.next += 1;
             id
         })
+    }
+
+    /// Read-only lookup. Panics if the var was never registered. Used after
+    /// `AgnosticFunc::new` has populated the mapper for every SSA var.
+    fn get_id(&self, var: SsaVariable) -> u32 {
+        *self.map.get(&var)
+            .unwrap_or_else(|| panic!("SsaVariable {:?} was never registered", var))
     }
 }
 
@@ -281,14 +389,12 @@ impl AgnosticFunc {
 
         // Synthetic parameter instruction
         let mut param_ops = Vec::new();
-        let arg_regs: Vec<xregalloc::PReg> = match target {
-            Target::X86_64 => machine_env::x86::ARG_REGS.iter()
-                .map(|&r| xregalloc::PReg(r as u32)).collect(),
-            Target::Aarch64 => machine_env::aarch64::ARG_REGS.iter()
-                .map(|&r| xregalloc::PReg(r as u32)).collect(),
+        let arg_regs: &[xregalloc::PReg] = match target {
+            Target::X86_64 => machine_env::x86::ARG_REGS,
+            Target::Aarch64 => machine_env::aarch64::ARG_REGS,
         };
         for (i, &param) in ssa.params.iter().enumerate() {
-            let var = xregalloc::Var(mapper.get(param));
+            let var = xregalloc::Var::int(mapper.get(param));
             let constraint = if i < arg_regs.len() {
                 xregalloc::Constraint::Fixed(arg_regs[i])
             } else {
@@ -321,32 +427,30 @@ impl AgnosticFunc {
                 let mut clobs = Vec::new();
                 match instr {
                     IrInstruction::Print(_) => {
-                        let caller_saved = match target {
+                        let caller_saved: &[xregalloc::PReg] = match target {
                             Target::X86_64 => machine_env::x86::CALLER_SAVED,
                             Target::Aarch64 => machine_env::aarch64::CALLER_SAVED,
                         };
-                        for &r in caller_saved {
-                            clobs.push(xregalloc::PReg(r as u32));
-                        }
+                        clobs.extend_from_slice(caller_saved);
                     }
                     IrInstruction::Call { dest, .. } => {
-                        let caller_saved = match target {
+                        let caller_saved: &[xregalloc::PReg] = match target {
                             Target::X86_64 => machine_env::x86::CALLER_SAVED,
                             Target::Aarch64 => machine_env::aarch64::CALLER_SAVED,
                         };
                         let ret_reg = match target {
-                            Target::X86_64 => 0, // RAX
-                            Target::Aarch64 => 0, // x0
+                            Target::X86_64 => machine_env::x86::RETURN_REG,
+                            Target::Aarch64 => machine_env::aarch64::RETURN_REG,
                         };
-                        for &r in caller_saved {
-                            if dest.is_some() && r == ret_reg {
+                        for &p in caller_saved {
+                            if dest.is_some() && p == ret_reg {
                                 continue;
                             }
-                            clobs.push(xregalloc::PReg(r as u32));
+                            clobs.push(p);
                         }
                     }
                     IrInstruction::Binary(crate::ssa::ir::BinaryOp::Div, _, _, _) if target == Target::X86_64 => {
-                        clobs.push(xregalloc::PReg(2)); // RDX clobbered by idiv
+                        clobs.push(machine_env::x86::RDX); // RDX clobbered by idiv
                     }
                     _ => {}
                 }
@@ -356,7 +460,7 @@ impl AgnosticFunc {
                 if let IrInstruction::PhiAssign(phi) = instr {
                     let mut op_map = HashMap::new();
                     for &(op_var, pred_b) in &phi.operands {
-                        op_map.insert(pred_b, xregalloc::Var(mapper.get(op_var)));
+                        op_map.insert(pred_b, xregalloc::Var::int(mapper.get(op_var)));
                     }
                     phi_info.push(Some(op_map));
                 } else {
@@ -380,9 +484,9 @@ impl AgnosticFunc {
             .map(|b| b.predecessors.clone())
             .collect();
 
-        let scratch_regs = match target {
-            Target::X86_64 => vec![xregalloc::PReg(11), xregalloc::PReg(10)], // r11, r10
-            Target::Aarch64 => vec![xregalloc::PReg(14), xregalloc::PReg(15)], // x14, x15
+        let scratch_regs: Vec<xregalloc::PReg> = match target {
+            Target::X86_64 => machine_env::x86::SCRATCH_REGS.to_vec(),
+            Target::Aarch64 => machine_env::aarch64::SCRATCH_REGS.to_vec(),
         };
 
         (
@@ -442,25 +546,6 @@ impl xregalloc::AllocFunction for AgnosticFunc {
         &self.scratch_regs
     }
 
-    fn is_valid_combination(&self, inst: usize, allocs: &[xregalloc::Allocation]) -> bool {
-        if self.target == Target::X86_64 {
-            if inst == 0 {
-                return true;
-            }
-            let original_info = &self.flat_inst_map[inst];
-            let Some((_b, _i)) = original_info else { return true; };
-            let mut stack_count = 0;
-            for alloc in allocs {
-                if matches!(alloc, xregalloc::Allocation::Stack(_)) {
-                    stack_count += 1;
-                }
-            }
-            stack_count <= 1
-        } else {
-            true
-        }
-    }
-
     fn is_phi(&self, inst: usize) -> bool {
         self.phi_info[inst].is_some()
     }
@@ -479,20 +564,20 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
     match inst {
         IrInstruction::Const(dst, _) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(*dst)),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });
         }
         IrInstruction::Mov(dst, src) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(*dst)),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });
             if let SsaValue::Var(v) = src {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*v)),
+                    var: xregalloc::Var::int(mapper.get(*v)),
                     constraint: xregalloc::Constraint::Any,
                     kind: xregalloc::OperandKind::Use,
                 });
@@ -503,7 +588,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
             let is_mul = target == Target::X86_64 && *op == crate::ssa::ir::BinaryOp::Mul;
 
             let dst_constraint = if is_div {
-                xregalloc::Constraint::Fixed(xregalloc::PReg(0)) // RAX
+                xregalloc::Constraint::Fixed(xregalloc::PReg::int(0)) // RAX
             } else if is_mul {
                 // 2-operand `imul` requires a register destination.
                 xregalloc::Constraint::Reg
@@ -512,20 +597,20 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
             };
 
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(*dst)),
                 constraint: dst_constraint,
                 kind: xregalloc::OperandKind::Def,
             });
             if let SsaValue::Var(v) = lhs {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*v)),
-                    constraint: if is_div { xregalloc::Constraint::Fixed(xregalloc::PReg(0)) } else { xregalloc::Constraint::Any }, // RAX
+                    var: xregalloc::Var::int(mapper.get(*v)),
+                    constraint: if is_div { xregalloc::Constraint::Fixed(xregalloc::PReg::int(0)) } else { xregalloc::Constraint::Any }, // RAX
                     kind: xregalloc::OperandKind::Use,
                 });
             }
             if let SsaValue::Var(v) = rhs {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*v)),
+                    var: xregalloc::Var::int(mapper.get(*v)),
                     constraint: xregalloc::Constraint::Any,
                     kind: xregalloc::OperandKind::Use,
                 });
@@ -533,13 +618,13 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         }
         IrInstruction::Not(dst, src) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(*dst)),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });
             if let SsaValue::Var(v) = src {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*v)),
+                    var: xregalloc::Var::int(mapper.get(*v)),
                     constraint: xregalloc::Constraint::Any,
                     kind: xregalloc::OperandKind::Use,
                 });
@@ -548,7 +633,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         IrInstruction::Print(src) => {
             if let SsaValue::Var(v) = src {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*v)),
+                    var: xregalloc::Var::int(mapper.get(*v)),
                     constraint: xregalloc::Constraint::Any,
                     kind: xregalloc::OperandKind::Use,
                 });
@@ -557,7 +642,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         IrInstruction::Br(cond, _, _) => {
             if let SsaValue::Var(v) = cond {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*v)),
+                    var: xregalloc::Var::int(mapper.get(*v)),
                     constraint: xregalloc::Constraint::Any,
                     kind: xregalloc::OperandKind::Use,
                 });
@@ -566,7 +651,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         IrInstruction::Ret(src) => {
             if let SsaValue::Var(v) = src {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*v)),
+                    var: xregalloc::Var::int(mapper.get(*v)),
                     constraint: xregalloc::Constraint::Any,
                     kind: xregalloc::OperandKind::Use,
                 });
@@ -574,22 +659,20 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         }
         IrInstruction::Call { dest, args, .. } => {
             let ret_reg = match target {
-                Target::X86_64 => xregalloc::PReg(0), // RAX
-                Target::Aarch64 => xregalloc::PReg(0), // x0
+                Target::X86_64 => machine_env::x86::RETURN_REG,
+                Target::Aarch64 => machine_env::aarch64::RETURN_REG,
             };
             if let Some(d) = dest {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var(mapper.get(*d)),
+                    var: xregalloc::Var::int(mapper.get(*d)),
                     constraint: xregalloc::Constraint::Fixed(ret_reg),
                     kind: xregalloc::OperandKind::Def,
                 });
             }
 
-            let arg_regs: Vec<xregalloc::PReg> = match target {
-                Target::X86_64 => machine_env::x86::ARG_REGS.iter()
-                    .map(|&r| xregalloc::PReg(r as u32)).collect(),
-                Target::Aarch64 => machine_env::aarch64::ARG_REGS.iter()
-                    .map(|&r| xregalloc::PReg(r as u32)).collect(),
+            let arg_regs: &[xregalloc::PReg] = match target {
+                Target::X86_64 => machine_env::x86::ARG_REGS,
+                Target::Aarch64 => machine_env::aarch64::ARG_REGS,
             };
 
             let mut arg_idx = 0;
@@ -601,7 +684,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
                         xregalloc::Constraint::Any
                     };
                     ops.push(xregalloc::Operand {
-                        var: xregalloc::Var(mapper.get(*v)),
+                        var: xregalloc::Var::int(mapper.get(*v)),
                         constraint,
                         kind: xregalloc::OperandKind::Use,
                     });
@@ -611,7 +694,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         }
         IrInstruction::PhiAssign(phi) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var(mapper.get(phi.var)),
+                var: xregalloc::Var::int(mapper.get(phi.var)),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });
@@ -623,8 +706,8 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
 
 fn map_alloc(alloc: xregalloc::Allocation) -> regalloc_ir::Allocation {
     match alloc {
-        xregalloc::Allocation::Reg(xregalloc::PReg(hw)) => {
-            regalloc_ir::Allocation::Reg(regalloc_ir::PhysReg::new(hw as usize))
+        xregalloc::Allocation::Reg(xregalloc::PReg { index, .. }) => {
+            regalloc_ir::Allocation::Reg(regalloc_ir::PhysReg::new(index as usize))
         }
         xregalloc::Allocation::Stack(xregalloc::SpillSlot(idx)) => {
             regalloc_ir::Allocation::Stack(regalloc_ir::SpillSlot::new(idx as usize))

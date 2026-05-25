@@ -1,0 +1,80 @@
+# Forces register spilling: 20 distinct values are defined back-to-back, then
+# all consumed by a chained reduction. Between the last def and the first
+# reduction, all 20 must be simultaneously live — well over the ~14 allocatable
+# GPRs, so xregalloc must spill at least 6 of them.
+#
+# Expected output for x = 10:
+#   sum(7,11,13,17,19,23,29,31,37,41,43,47,53,59,61,67,71,73,79,83) = 864
+#   result = 864 * 10 = 8640
+
+@spillme(x: int): int {
+  c1:  int = const 7;
+  c2:  int = const 11;
+  c3:  int = const 13;
+  c4:  int = const 17;
+  c5:  int = const 19;
+  c6:  int = const 23;
+  c7:  int = const 29;
+  c8:  int = const 31;
+  c9:  int = const 37;
+  c10: int = const 41;
+  c11: int = const 43;
+  c12: int = const 47;
+  c13: int = const 53;
+  c14: int = const 59;
+  c15: int = const 61;
+  c16: int = const 67;
+  c17: int = const 71;
+  c18: int = const 73;
+  c19: int = const 79;
+  c20: int = const 83;
+
+  a1:  int = mul x c1;
+  a2:  int = mul x c2;
+  a3:  int = mul x c3;
+  a4:  int = mul x c4;
+  a5:  int = mul x c5;
+  a6:  int = mul x c6;
+  a7:  int = mul x c7;
+  a8:  int = mul x c8;
+  a9:  int = mul x c9;
+  a10: int = mul x c10;
+  a11: int = mul x c11;
+  a12: int = mul x c12;
+  a13: int = mul x c13;
+  a14: int = mul x c14;
+  a15: int = mul x c15;
+  a16: int = mul x c16;
+  a17: int = mul x c17;
+  a18: int = mul x c18;
+  a19: int = mul x c19;
+  a20: int = mul x c20;
+
+  s1:  int = add a1  a2;
+  s2:  int = add s1  a3;
+  s3:  int = add s2  a4;
+  s4:  int = add s3  a5;
+  s5:  int = add s4  a6;
+  s6:  int = add s5  a7;
+  s7:  int = add s6  a8;
+  s8:  int = add s7  a9;
+  s9:  int = add s8  a10;
+  s10: int = add s9  a11;
+  s11: int = add s10 a12;
+  s12: int = add s11 a13;
+  s13: int = add s12 a14;
+  s14: int = add s13 a15;
+  s15: int = add s14 a16;
+  s16: int = add s15 a17;
+  s17: int = add s16 a18;
+  s18: int = add s17 a19;
+  s19: int = add s18 a20;
+
+  ret s19;
+}
+
+@main {
+  n: int = const 10;
+  r: int = call @spillme n;
+  print r;
+}

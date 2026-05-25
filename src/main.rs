@@ -48,7 +48,9 @@ fn main() -> Result<()> {
             println!("function {}", bril_fn.name);
             let mut s = ssa::build_ssa(bril_fn);
             ssa::critical_edge::split_critical_edges(&mut s);
-            crate::regalloc::lower_phis_to_parallel_moves(&mut s);
+            // Phi-lowering is deferred to after register allocation so the
+            // allocator can coalesce phi operands with their destination,
+            // turning what would be Mov instructions into self-copies.
             ssa::prune_unreachable(&mut s);
             s
         })

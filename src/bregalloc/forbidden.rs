@@ -84,28 +84,30 @@ impl Forbidden {
             let candidates: &HashSet<Var> = live_at.at(inst);
 
             let inst_flat = inst * 2 + 1;
+            let implicit_reads: std::collections::HashSet<PReg> =
+                func.inst_implicit_reads(inst).iter().copied().collect();
+
             for (preg, fixed_at_here) in &claims {
                 for &v in candidates {
-                    if fixed_at_here.contains(&v) {
-                        // Carve-out: v is itself fixed to preg here.
-                        // Safe if v is defined here (Def), or if v is used here and dies here.
+                    let skip = if fixed_at_here.contains(&v) {
+                        // v is itself fixed to this preg: safe if it's a fresh
+                        // def here, or if it's consumed and dies at this inst.
                         let is_def_here = func.inst_operands(inst).iter().any(|op| {
-                            op.var == v && op.kind == OperandKind::Def && op.constraint == Constraint::Fixed(*preg)
+                            op.var == v && op.kind == OperandKind::Def
+                                && op.constraint == Constraint::Fixed(*preg)
                         });
-                        if is_def_here {
-                            continue;
-                        }
-                        let dies_here = last_use
-                            .get(&v)
-                            .map_or(true, |lu| *lu <= inst_flat);
-                        if dies_here {
-                            continue;
-                        }
+                        is_def_here || last_use.get(&v).map_or(true, |lu| *lu <= inst_flat)
+                    } else if !implicit_reads.contains(preg) {
+                        // Pure-write clobber: the preg is not read by this
+                        // instruction before the write, so a var that dies here
+                        // (its value is read before the clobber fires) is safe.
+                        last_use.get(&v).map_or(true, |lu| *lu <= inst_flat)
+                    } else {
+                        false // implicit-read preg (e.g. RDX for idiv): no carve-out
+                    };
+                    if skip {
+                        continue;
                     }
-                    // Class check: a Float var can never be in an Int preg
-                    // anyway, but we'd want preferences and forbids only
-                    // inside the matching class. Skip cross-class entries
-                    // to keep the sets focused.
                     if v.class != preg.class {
                         continue;
                     }

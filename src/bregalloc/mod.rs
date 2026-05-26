@@ -139,6 +139,20 @@ pub trait AllocFunction {
     /// default implementation returns 0 — the allocator still works, it
     /// just loses the loop-aware weighting.
     fn loop_depth(&self, _block: usize) -> u32 { 0 }
+
+    /// Physical registers that are *read* implicitly by `inst` before any
+    /// named operand or clobber takes effect. The canonical example is x86
+    /// `idiv`: RDX must be set up (via `cqo` / `xor rdx,rdx`) before the
+    /// instruction executes, so RDX is an implicit input even though it also
+    /// appears in the clobber list.
+    ///
+    /// This is used by the Forbidden analysis to distinguish pure-write
+    /// clobbers (safe to carve out when a var dies here) from read-then-write
+    /// clobbers (not safe — the implicit read happens before named operands).
+    ///
+    /// Default: empty (most instructions have no implicit reads beyond their
+    /// declared operands).
+    fn inst_implicit_reads(&self, _inst: usize) -> &[PReg] { &[] }
 }
 
 /// Top-level entry point: full Braun-style preference-guided allocation.
@@ -188,7 +202,7 @@ pub fn allocate<F: AllocFunction>(
     let forbidden_set = forbidden::Forbidden::compute(func, &liveness);
 
     // 5. Preferences.
-    let mut prefs = preference::Preferences::compute(func, &liveness, &freqs);
+    let mut prefs = preference::Preferences::compute(func, &liveness, &freqs, &allocatable_by_class);
 
     // 6. Affinity chunks + constraint propagation (paper §3.3).
     let mut affinity = affinity::AffinityChunks::build(func);

@@ -20,7 +20,7 @@
 use std::collections::HashMap;
 
 use super::liveness::Liveness;
-use super::{AllocFunction, Constraint, OperandKind, PReg, Var};
+use super::{AllocFunction, Constraint, OperandKind, PReg, RegClass, Var};
 
 #[derive(Clone)]
 pub struct Preferences {
@@ -32,6 +32,7 @@ impl Preferences {
         func: &F,
         liveness: &Liveness,
         freqs: &[u32],
+        allocatable_by_class: &HashMap<RegClass, Vec<PReg>>,
     ) -> Self {
         let mut pref: HashMap<Var, HashMap<PReg, i32>> = HashMap::new();
 
@@ -79,8 +80,18 @@ impl Preferences {
                         }
                         let entry = pref.entry(v).or_default().entry(p).or_insert(0);
                         if owners.contains(&v) {
-                            // v itself wants p at this inst: boost.
+                            // v itself wants p: boost p.
                             *entry += freq;
+                            // Paper §3.2: c_l(v) = e_R − 1. The −1 means every
+                            // other allocatable reg of this class gets a dislike
+                            // equal to freq, biasing v firmly toward p.
+                            if let Some(pool) = allocatable_by_class.get(&v.class) {
+                                for &other in pool {
+                                    if other != p {
+                                        *pref.entry(v).or_default().entry(other).or_insert(0) -= freq;
+                                    }
+                                }
+                            }
                         } else {
                             // Someone else claims p here: v dislikes p.
                             *entry -= freq;

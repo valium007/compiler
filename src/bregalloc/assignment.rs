@@ -16,6 +16,10 @@
 
 use std::collections::{HashMap, HashSet};
 
+/// Affinity broadcast weight: how many times `block_freq` each preference
+/// boost is worth. Higher values make coalescing more aggressive.
+const AFFINITY_BOOST_FACTOR: i32 = 4;
+
 use super::affinity::AffinityChunks;
 use super::forbidden::Forbidden;
 use super::liveness::Liveness;
@@ -99,6 +103,7 @@ pub fn run<F: AllocFunction>(
                 occupied.insert(p, dst);
                 broadcast_chunk_preference(
                     dst, p, affinity, prefs, &chunk_index, &vreg_alloc, block_freq,
+                    input.liveness, b,
                 );
 
                 let inst_flat = inst * 2 + 1;
@@ -165,6 +170,7 @@ pub fn run<F: AllocFunction>(
                         occupied.insert(p, v);
                         broadcast_chunk_preference(
                             v, p, affinity, prefs, &chunk_index, &vreg_alloc, block_freq,
+                            input.liveness, b,
                         );
 
                         let has_later_use = input.liveness.live_out[b].contains(&v) || next_use
@@ -185,18 +191,12 @@ pub fn run<F: AllocFunction>(
 }
 
 /// Choose a physical register for `v` — Algorithm 2 + Algorithm 3 from the
-/// paper.
-///
-/// **Algorithm 2**: Walk preference-sorted pregs; pick the first that is free
-/// and not forbidden.
-///
-/// **Fallback**: If no preferred preg qualifies, try *any* allocatable preg
-/// of the right class that is free and not forbidden.
-///
-/// **Algorithm 3 (optimistic move insertion)**: If the most-preferred preg
-/// is occupied but the occupying variable could be moved aside cheaply
-/// (i.e. the preference gain exceeds the block's execution frequency),
-/// relocate the occupier and take the preferred preg.
+/// paper, extended with:
+///   - (#3) Alg 3 preemption: before settling for a free but lower-ranked
+///     preg, evaluate whether displacing the occupant of the top-ranked preg
+///     is cost-effective.
+///   - (#6) Two-level chain: if ovar has no free target, try evicting ovar to
+///     a preg whose occupant (wvar) itself has a free escape route.
 fn get_register(
     v: Var,
     occupied: &mut HashMap<PReg, Var>,
@@ -212,83 +212,102 @@ fn get_register(
         .unwrap_or(&[]);
     let ranked = prefs.sorted_pregs(v, pool);
 
-    // ── Algorithm 2: first free, non-forbidden preg by preference ──────
+    // Scan once: find the top non-forbidden preg (occupied or free) and the
+    // best free non-forbidden preg.
+    let mut top: Option<PReg> = None;
+    let mut first_free: Option<PReg> = None;
     for &p in &ranked {
-        if occupied.contains_key(&p) {
-            continue;
-        }
-        if forbidden.is_forbidden(v, p) {
-            continue;
-        }
-        return Some(p);
+        if forbidden.is_forbidden(v, p) { continue; }
+        if top.is_none() { top = Some(p); }
+        if first_free.is_none() && !occupied.contains_key(&p) { first_free = Some(p); }
     }
 
-    // ── Fallback: any free preg not in ranked (score 0, unranked) ──────
-    // `ranked` already contains all pool entries, so we scan pool again
-    // just to be sure none was missed by the forbidden check pattern.
-    // (ranked == pool sorted by pref — they have the same elements.)
-    // If we got here, every preg is either occupied or forbidden.
-    // Proceed to Algorithm 3.
+    let desired = match top {
+        None => return first_free, // entire pool forbidden
+        Some(d) => d,
+    };
 
-    // ── Algorithm 3: optimistic move insertion ─────────────────────────
-    // Try to relocate the occupying variable of the top-preferred preg.
-    //
-    // Paper pseudocode:
-    //   ovar ← reg.current_variable
-    //   find ovar's next-best free preg → oreg
-    //   other_win ← opref − oreg.current_pref
-    //   next_pref ← preference for next free register for v
-    //   win ← next_pref − pref
-    //   if win + other_win > block.execfreq: relocate, return reg
-    for &desired in &ranked {
-        if forbidden.is_forbidden(v, desired) {
-            continue;
-        }
-        let Some(&ovar) = occupied.get(&desired) else {
-            // Free! Shouldn't happen (we checked above), but take it.
-            return Some(desired);
-        };
+    // If the top-ranked preg is already free, take it immediately (Alg 2).
+    if !occupied.contains_key(&desired) {
+        return Some(desired);
+    }
 
-        // Find ovar's next-best free, non-forbidden preg.
-        let ovar_ranked = prefs.sorted_pregs(ovar, pool);
-        let ovar_current_pref = prefs.score(ovar, desired);
-        let relocate_target = ovar_ranked.iter().find(|&&op| {
-            op != desired && !occupied.contains_key(&op) && !forbidden.is_forbidden(ovar, op)
-        });
-        let Some(&oreg) = relocate_target else {
-            continue; // ovar has nowhere to go
-        };
-        let oreg_pref = prefs.score(ovar, oreg);
-        let ovar_loss = ovar_current_pref - oreg_pref; // cost of displacing ovar (positive)
+    // `desired` is occupied. Compute how much v gains by landing there vs
+    // settling for `first_free` (or nothing if everything is occupied).
+    let v_desired_pref = prefs.score(v, desired);
+    let v_fallback_pref = first_free.map_or(0, |p| prefs.score(v, p));
+    let v_gain = v_desired_pref - v_fallback_pref;
 
-        // v's preference difference: what v gets (desired) vs next-best free.
-        let v_desired_pref = prefs.score(v, desired);
-        let v_next = ranked.iter().find(|&&p| {
-            p != desired && !occupied.contains_key(&p) && !forbidden.is_forbidden(v, p)
-        });
-        let v_next_pref = v_next.map_or(0, |&p| prefs.score(v, p));
-        let v_gain = v_desired_pref - v_next_pref; // benefit of picking desired (positive)
+    let ovar = *occupied.get(&desired).unwrap();
+    let ovar_ranked = prefs.sorted_pregs(ovar, pool);
+    let ovar_current_pref = prefs.score(ovar, desired);
 
-        // Paper criterion: move is worthwhile if net gain > block frequency.
+    // ── Single-level Alg 3 ────────────────────────────────────────────────
+    if let Some(oreg) = ovar_ranked.iter().copied().find(|&op| {
+        op != desired && !occupied.contains_key(&op) && !forbidden.is_forbidden(ovar, op)
+    }) {
+        let ovar_loss = ovar_current_pref - prefs.score(ovar, oreg);
         if v_gain - ovar_loss > block_freq as i32 {
-            // Relocate ovar from `desired` to `oreg`.
             vreg_alloc.insert(ovar, Allocation::Reg(oreg));
             occupied.remove(&desired);
             occupied.insert(oreg, ovar);
             return Some(desired);
         }
-
-        // Optimistic move was not cost-effective for this preg.
-        // If there's a free preg for v (even if not the desired one),
-        // we would have returned it in Algorithm 2. So we only continue
-        // to try optimistic moves on the next-preferred occupied preg.
     }
 
-    // Last resort: grab any free, non-forbidden preg (may have been
-    // missed if ranked was empty or all forbidden). This shouldn't
-    // normally trigger after Algorithm 3 attempts.
-    for &p in pool {
-        if !occupied.contains_key(&p) && !forbidden.is_forbidden(v, p) {
+    // ── Two-level chain (#6) ─────────────────────────────────────────────
+    // ovar can't find a free slot; try: ovar → oreg (occupied by wvar),
+    // wvar → wreg (free). If both displacements are net-profitable, do chain.
+    'chain: for &oreg in &ovar_ranked {
+        if oreg == desired || forbidden.is_forbidden(ovar, oreg) { continue; }
+        let &wvar = match occupied.get(&oreg) {
+            Some(w) => w,
+            None => continue, // free — would have been taken by single-level above
+        };
+        let wvar_ranked = prefs.sorted_pregs(wvar, pool);
+        let wreg = wvar_ranked.iter().copied().find(|&wp| {
+            wp != oreg && wp != desired
+                && !occupied.contains_key(&wp)
+                && !forbidden.is_forbidden(wvar, wp)
+        });
+        let Some(wreg) = wreg else { continue 'chain; };
+
+        let ovar_loss = ovar_current_pref - prefs.score(ovar, oreg);
+        let wvar_loss = prefs.score(wvar, oreg) - prefs.score(wvar, wreg);
+        if v_gain - ovar_loss - wvar_loss > block_freq as i32 {
+            vreg_alloc.insert(wvar, Allocation::Reg(wreg));
+            occupied.remove(&oreg);
+            occupied.insert(wreg, wvar);
+            vreg_alloc.insert(ovar, Allocation::Reg(oreg));
+            occupied.remove(&desired);
+            occupied.insert(oreg, ovar);
+            return Some(desired);
+        }
+    }
+
+    // Optimistic displacement wasn't worth it. Fall back to first_free.
+    if let Some(p) = first_free {
+        return Some(p);
+    }
+
+    // Everything occupied. Try single-level Alg 3 for lower-ranked pregs.
+    for &p in ranked.iter().skip(1) {
+        if forbidden.is_forbidden(v, p) { continue; }
+        let &ovar2 = match occupied.get(&p) {
+            Some(o) => o,
+            None => return Some(p), // shouldn't happen but take it
+        };
+        let ovar2_ranked = prefs.sorted_pregs(ovar2, pool);
+        let ovar2_cur = prefs.score(ovar2, p);
+        let Some(oreg2) = ovar2_ranked.iter().copied().find(|&op| {
+            op != p && !occupied.contains_key(&op) && !forbidden.is_forbidden(ovar2, op)
+        }) else { continue; };
+        let loss2 = ovar2_cur - prefs.score(ovar2, oreg2);
+        let gain2 = prefs.score(v, p); // no free fallback, baseline 0
+        if gain2 - loss2 > block_freq as i32 {
+            vreg_alloc.insert(ovar2, Allocation::Reg(oreg2));
+            occupied.remove(&p);
+            occupied.insert(oreg2, ovar2);
             return Some(p);
         }
     }
@@ -297,9 +316,11 @@ fn get_register(
 }
 
 /// After coloring `v` to `p`, broadcast a preference for `p` to all
-/// uncolored chunk members. Uses the pre-computed chunk→members index
-/// for O(chunk_size) instead of O(N). This is the affinity-propagation
-/// step (paper §3.3) that drives coalescing.
+/// uncolored chunk members that don't interfere with `v` (paper §3.3).
+///
+/// Interference check: in SSA, `w` interferes with `v` if `w` is live at
+/// `v`'s definition point — i.e. `w ∈ live_in[block]`. Already-colored
+/// vars implicitly handled: they're skipped by the `vreg_alloc` check.
 fn broadcast_chunk_preference(
     v: Var,
     p: PReg,
@@ -308,21 +329,19 @@ fn broadcast_chunk_preference(
     chunk_index: &HashMap<u32, Vec<Var>>,
     vreg_alloc: &HashMap<Var, Allocation>,
     block_freq: u32,
+    liveness: &super::liveness::Liveness,
+    block: usize,
 ) {
     let root = affinity.find(v);
     if let Some(members) = chunk_index.get(&root) {
         for &w in members {
-            if w == v {
-                continue;
-            }
-            if vreg_alloc.contains_key(&w) {
-                continue;
-            }
-            if w.class != p.class {
-                continue;
-            }
-            // Scale boost dynamically with block frequency
-            prefs.boost(w, p, (block_freq * 4) as i32);
+            if w == v { continue; }
+            if vreg_alloc.contains_key(&w) { continue; }
+            if w.class != p.class { continue; }
+            // Skip vars live at v's def point — they interfere and can't
+            // share p anyway; boosting them just pollutes their pref vectors.
+            if liveness.live_in[block].contains(&w) { continue; }
+            prefs.boost(w, p, block_freq as i32 * AFFINITY_BOOST_FACTOR);
         }
     }
 }

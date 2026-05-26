@@ -110,6 +110,7 @@ struct BAgnosticFunc {
     preds: Vec<Vec<usize>>,
     inst_operands: Vec<Vec<bregalloc::Operand>>,
     inst_clobbers: Vec<Vec<bregalloc::PReg>>,
+    inst_implicit_reads: Vec<Vec<bregalloc::PReg>>,
     scratch_regs: Vec<bregalloc::PReg>,
     num_vregs: usize,
     flat_inst_map: Vec<Option<(usize, usize)>>,
@@ -169,6 +170,7 @@ impl BAgnosticFunc {
 
         let mut inst_operands: Vec<Vec<bregalloc::Operand>> = Vec::new();
         let mut inst_clobbers: Vec<Vec<bregalloc::PReg>> = Vec::new();
+        let mut inst_implicit_reads: Vec<Vec<bregalloc::PReg>> = Vec::new();
         let mut flat_inst_map: Vec<Option<(usize, usize)>> = Vec::new();
         let mut phi_info: Vec<Option<HashMap<usize, bregalloc::Var>>> = Vec::new();
         let mut copy_info: Vec<bool> = Vec::new();
@@ -196,6 +198,7 @@ impl BAgnosticFunc {
         }
         inst_operands.push(param_ops);
         inst_clobbers.push(Vec::new());
+        inst_implicit_reads.push(Vec::new());
         flat_inst_map.push(None);
         phi_info.push(None);
         copy_info.push(false);
@@ -245,6 +248,20 @@ impl BAgnosticFunc {
                 }
                 inst_clobbers.push(clobs);
 
+                // Implicit reads: registers consumed by the instruction
+                // before named operands take effect. x86 idiv reads RDX as the
+                // high half of the dividend; cqo/xor-rdx setup runs before the
+                // instruction reads any named operand.
+                let impl_reads: Vec<bregalloc::PReg> = match instr {
+                    IrInstruction::Binary(crate::ssa::ir::BinaryOp::Div, _, _, _)
+                        if target == Target::X86_64 =>
+                    {
+                        vec![bregalloc::PReg::int(machine_env::x86::RDX.index)]
+                    }
+                    _ => Vec::new(),
+                };
+                inst_implicit_reads.push(impl_reads);
+
                 if let IrInstruction::PhiAssign(phi) = instr {
                     let mut op_map = HashMap::new();
                     for &(op_var, pred_b) in &phi.operands {
@@ -291,6 +308,7 @@ impl BAgnosticFunc {
                 preds,
                 inst_operands,
                 inst_clobbers,
+                inst_implicit_reads,
                 scratch_regs,
                 num_vregs: mapper.next as usize,
                 flat_inst_map,
@@ -312,6 +330,7 @@ impl bregalloc::AllocFunction for BAgnosticFunc {
     fn num_instructions(&self) -> usize { self.inst_operands.len() }
     fn inst_operands(&self, inst: usize) -> &[bregalloc::Operand] { &self.inst_operands[inst] }
     fn inst_clobbers(&self, inst: usize) -> &[bregalloc::PReg] { &self.inst_clobbers[inst] }
+    fn inst_implicit_reads(&self, inst: usize) -> &[bregalloc::PReg] { &self.inst_implicit_reads[inst] }
     fn num_vregs(&self) -> usize { self.num_vregs }
     fn scratch_regs(&self) -> &[bregalloc::PReg] { &self.scratch_regs }
     fn is_phi(&self, inst: usize) -> bool { self.phi_info[inst].is_some() }

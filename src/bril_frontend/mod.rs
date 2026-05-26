@@ -2,8 +2,7 @@ use anyhow::Result;
 pub mod json;
 pub use json::Program;
 
-pub fn parse_json() -> Result<Program> {
-    let json = include_str!("../../program.json");
-    let program: Program = serde_json::from_str(json)?;
+pub fn parse_json(json_content: &str) -> Result<Program> {
+    let program: Program = serde_json::from_str(json_content)?;
     Ok(program)
 }

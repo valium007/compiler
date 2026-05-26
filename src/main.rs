@@ -2,6 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::fs;
 
+pub mod bregalloc;
 pub mod bril_frontend;
 pub mod brilir;
 pub mod codegen;
@@ -11,7 +12,6 @@ pub mod xregalloc;
 
 use crate::brilir::compile_bril;
 use crate::regalloc::Target;
-use crate::regalloc::regalloc_ir::LoweredInst;
 
 fn main() -> Result<()> {
     // ── Parse target from CLI args using clap ────────────────────────
@@ -24,6 +24,18 @@ fn main() -> Result<()> {
                 .action(clap::ArgAction::SetTrue)
                 .help("Force targeting experimental x86_64 backend instead of AArch64"),
         )
+        .arg(
+            clap::Arg::new("braun")
+                .long("braun")
+                .action(clap::ArgAction::SetTrue)
+                .help("Use the Braun-style SSA register allocator instead of xregalloc"),
+        )
+        .arg(
+            clap::Arg::new("input")
+                .help("Path to the input BRIL JSON file (reads from stdin if omitted)")
+                .required(false)
+                .index(1),
+        )
         .get_matches();
 
     let target = if matches.get_flag("experimental-x86") {
@@ -32,13 +44,21 @@ fn main() -> Result<()> {
         Target::Aarch64
     };
 
-    let target_name = match target {
-        Target::X86_64 => "x86-64",
-        Target::Aarch64 => "aarch64",
+    let use_braun = matches.get_flag("braun");
+
+    let input_path = matches.get_one::<String>("input");
+    let json_content = match input_path {
+        Some(path) => fs::read_to_string(path)?,
+        None => {
+            use std::io::{self, Read};
+            let mut buffer = String::new();
+            io::stdin().read_to_string(&mut buffer)?;
+            buffer
+        }
     };
 
     // ── Frontend: Bril → non-SSA IR (one Builder per function) ─────────
-    let bril_builders = compile_bril()?;
+    let bril_builders = compile_bril(&json_content)?;
     println!("=== Compiled {} function(s) ===", bril_builders.len());
 
     // ── SSA construction (Braun's algorithm) — per function ──────────────
@@ -89,7 +109,11 @@ fn main() -> Result<()> {
     // ── Rogers pipeline (Ian Rogers 2020, phi-based, no regalloc2) ───
     let mut fn_lowered_info = Vec::new();
     for sb in &ssa_builders {
-        let (num_spillslots, lowered) = crate::regalloc::run_regalloc(sb, target);
+        let (num_spillslots, lowered) = if use_braun {
+            crate::regalloc::badapter::run_regalloc_b(sb, target)
+        } else {
+            crate::regalloc::run_regalloc(sb, target)
+        };
         let entry_id = fn_entry_map[&sb.name];
         fn_lowered_info.push((sb.name.clone(), entry_id, lowered, num_spillslots));
     }

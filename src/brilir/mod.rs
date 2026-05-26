@@ -14,8 +14,8 @@ use crate::{
 use anyhow::Result;
 use hashbrown::HashMap;
 
-pub fn compile_bril() -> Result<Vec<Builder>> {
-    let mut program = bril_frontend::parse_json()?;
+pub fn compile_bril(json_content: &str) -> Result<Vec<Builder>> {
+    let mut program = bril_frontend::parse_json(json_content)?;
     let mut result = Vec::new();
 
     // Pre-pass: compute global entry block IDs for all functions so that

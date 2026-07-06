@@ -9,3 +9,4 @@ out.ll
 *.pdf
 *.png
 out
+!README.md

@@ -2,8 +2,6 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::fs;
 
-pub mod bregalloc;
-pub mod view;
 pub mod bril_frontend;
 pub mod brilir;
 pub mod codegen;
@@ -20,18 +18,6 @@ fn main() -> Result<()> {
     let matches = clap::Command::new("compiler")
         .version("0.1.0")
         .about("Bril compiler targeting x86-64")
-        .arg(
-            clap::Arg::new("braun")
-                .long("braun")
-                .action(clap::ArgAction::SetTrue)
-                .help("Use the Braun-style SSA register allocator (v1) instead of xregalloc"),
-        )
-        .arg(
-            clap::Arg::new("check-regalloc")
-                .long("--check-regalloc")
-                .action(clap::ArgAction::SetTrue)
-                .help("Run the symbolic checker on each bregalloc allocation (no-op without --braun or --braun-v2)"),
-        )
         .arg(
             clap::Arg::new("max-ssa")
                 .long("max-ssa")
@@ -62,9 +48,7 @@ fn main() -> Result<()> {
 
     let target = Target::X86_64;
 
-    let use_braun = matches.get_flag("braun");
-    let use_braun_v2 = matches.get_flag("braun-v2");
-    let check_regalloc = matches.get_flag("check-regalloc");
+
 
     let input_path = matches.get_one::<String>("input").unwrap();
     let json_content = fs::read_to_string(input_path)?;
@@ -132,13 +116,7 @@ fn main() -> Result<()> {
     // ── Rogers pipeline (Ian Rogers 2020, phi-based, no regalloc2) ───
     let mut fn_lowered_info = Vec::new();
     for sb in &ssa_builders {
-        let (num_spillslots, lowered) = if use_braun_v2 {
-            crate::regalloc::badapter_v2::run_regalloc_b_v2(sb, target, check_regalloc)
-        } else if use_braun {
-            crate::regalloc::badapter::run_regalloc_b(sb, target, check_regalloc)
-        } else {
-            crate::regalloc::run_regalloc(sb, target)
-        };
+        let (num_spillslots, lowered) =  crate::regalloc::run_regalloc(sb, target);
         let entry_id = fn_entry_map[&sb.name];
         fn_lowered_info.push((sb.name.clone(), entry_id, lowered, num_spillslots));
     }
@@ -146,7 +124,7 @@ fn main() -> Result<()> {
     let assembly = crate::codegen::generate_program(&fn_lowered_info, target);
     let output_path = matches
         .get_one::<String>("output")
-        .ok_or_else(|| anyhow::anyhow!("--view was not set, so an output path is required"))?;
+        .ok_or_else(|| anyhow::anyhow!("an output path is required"))?;
     fs::write(output_path, &assembly)?;
     println!("assembly written to {}", output_path);
     Ok(())

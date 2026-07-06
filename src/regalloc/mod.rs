@@ -1,7 +1,5 @@
 pub mod regalloc_ir;
 pub mod machine_env;
-pub mod badapter;
-pub mod badapter_v2;
 use crate::ssa::ir::{Builder as SsaBuilder, IrInstruction, SsaValue, SsaVariable};
 pub use machine_env::Target;
 use regalloc_ir::LoweredInst;

@@ -12,7 +12,7 @@ use crate::{
     },
 };
 use anyhow::Result;
-use hashbrown::HashMap;
+use std::collections::HashMap;
 
 pub fn compile_bril(json_content: &str) -> Result<Vec<Builder>> {
     let mut program = bril_frontend::parse_json(json_content)?;

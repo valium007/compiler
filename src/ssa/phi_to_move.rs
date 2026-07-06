@@ -1,5 +1,5 @@
 use crate::ssa::ir::{Builder as SsaBuilder, IrInstruction, SsaValue, SsaVariable};
-use super::parallel_move;
+use crate::ssa::parallel_move;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct VarCopy {
@@ -38,10 +38,13 @@ pub fn lower_phis_to_parallel_moves(ssa: &mut SsaBuilder) {
         for pred in predecessors {
             let mut parallel_copies = Vec::new();
             for phi in &phis {
-                if let Some(&(src_var, _)) = phi.operands.iter().find(|&&(_, from_b)| from_b == pred) {
+                // Phi operands are always Var by invariant.
+                if let Some((src_val, _)) =
+                    phi.operands.iter().find(|(_, from_b)| *from_b == pred)
+                {
                     parallel_copies.push(VarCopy {
-                        src: src_var,
-                        dst: phi.var,
+                        src: src_val.expect_var(),
+                        dst: phi.var.expect_var(),
                     });
                 }
             }
@@ -63,7 +66,7 @@ pub fn lower_phis_to_parallel_moves(ssa: &mut SsaBuilder) {
         });
         
         let new_instrs: Vec<IrInstruction> = copies.into_iter()
-            .map(|c| IrInstruction::Mov(c.dst, SsaValue::Var(c.src)))
+            .map(|c| IrInstruction::Mov(SsaValue::Var(c.dst), SsaValue::Var(c.src)))
             .collect();
             
         if has_terminator {

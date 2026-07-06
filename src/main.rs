@@ -3,9 +3,11 @@ use std::collections::HashMap;
 use std::fs;
 
 pub mod bregalloc;
+pub mod view;
 pub mod bril_frontend;
 pub mod brilir;
 pub mod codegen;
+pub mod max_ssa;
 pub mod regalloc;
 pub mod ssa;
 pub mod xregalloc;
@@ -14,67 +16,98 @@ use crate::brilir::compile_bril;
 use crate::regalloc::Target;
 
 fn main() -> Result<()> {
-    // ── Parse target from CLI args using clap ────────────────────────
+    // ── Parse arguments using clap ────────────────────────
     let matches = clap::Command::new("compiler")
         .version("0.1.0")
-        .about("Bril compiler targeting AArch64 (default) and x86-64")
-        .arg(
-            clap::Arg::new("experimental-x86")
-                .long("experimental-x86")
-                .action(clap::ArgAction::SetTrue)
-                .help("Force targeting experimental x86_64 backend instead of AArch64"),
-        )
+        .about("Bril compiler targeting x86-64")
         .arg(
             clap::Arg::new("braun")
                 .long("braun")
                 .action(clap::ArgAction::SetTrue)
-                .help("Use the Braun-style SSA register allocator instead of xregalloc"),
+                .help("Use the Braun-style SSA register allocator (v1) instead of xregalloc"),
+        )
+        .arg(
+            clap::Arg::new("check-regalloc")
+                .long("--check-regalloc")
+                .action(clap::ArgAction::SetTrue)
+                .help("Run the symbolic checker on each bregalloc allocation (no-op without --braun or --braun-v2)"),
+        )
+        .arg(
+            clap::Arg::new("max-ssa")
+                .long("max-ssa")
+                .action(clap::ArgAction::SetTrue)
+                .help("Build maximal SSA form (incremental-lifting experiment), print it, then exit"),
+        )
+        .arg(
+            clap::Arg::new("ssa-dump")
+                .long("ssa-dump")
+                .num_args(0..=1)
+                .default_missing_value("")
+                .help("Dump the SSA CFG in DOT format using petgraph to a file before critical edge splitting"),
         )
         .arg(
             clap::Arg::new("input")
-                .help("Path to the input BRIL JSON file (reads from stdin if omitted)")
-                .required(false)
+                .help("Path to the input BRIL JSON file")
+                .required(true)
                 .index(1),
+        )
+        .arg(
+            clap::Arg::new("output")
+                .help("Path to the output assembly file (not required with --view)")
+                .required(false)
+                .index(2),
         )
         .get_matches();
 
-    let target = if matches.get_flag("experimental-x86") {
-        Target::X86_64
-    } else {
-        Target::Aarch64
-    };
+
+    let target = Target::X86_64;
 
     let use_braun = matches.get_flag("braun");
+    let use_braun_v2 = matches.get_flag("braun-v2");
+    let check_regalloc = matches.get_flag("check-regalloc");
 
-    let input_path = matches.get_one::<String>("input");
-    let json_content = match input_path {
-        Some(path) => fs::read_to_string(path)?,
-        None => {
-            use std::io::{self, Read};
-            let mut buffer = String::new();
-            io::stdin().read_to_string(&mut buffer)?;
-            buffer
-        }
-    };
+    let input_path = matches.get_one::<String>("input").unwrap();
+    let json_content = fs::read_to_string(input_path)?;
 
     // ── Frontend: Bril → non-SSA IR (one Builder per function) ─────────
     let bril_builders = compile_bril(&json_content)?;
     println!("=== Compiled {} function(s) ===", bril_builders.len());
 
-    // ── SSA construction (Braun's algorithm) — per function ──────────────
-    let ssa_builders: Vec<ssa::ir::Builder> = bril_builders
+    // ── SSA construction — per function. `--max-ssa` selects maximal SSA
+    // (incremental-lifting experiment); otherwise Braun's algorithm. Both
+    // produce ssa::ir::Builder and feed the same downstream pipeline.
+    let use_max_ssa = matches.get_flag("max-ssa");
+    let mut ssa_builders: Vec<ssa::ir::Builder> = bril_builders
         .iter()
         .map(|bril_fn| {
             println!("function {}", bril_fn.name);
-            let mut s = ssa::build_ssa(bril_fn);
-            ssa::critical_edge::split_critical_edges(&mut s);
-            // Phi-lowering is deferred to after register allocation so the
-            // allocator can coalesce phi operands with their destination,
-            // turning what would be Mov instructions into self-copies.
-            ssa::prune_unreachable(&mut s);
-            s
+            if use_max_ssa {
+                max_ssa::build_max_ssa(bril_fn)
+            } else {
+                ssa::build_ssa(bril_fn)
+            }
         })
         .collect();
+
+    if let Some(dump_ssa_val) = matches.get_one::<String>("ssa-dump") {
+        let path = if dump_ssa_val.is_empty() {
+            std::path::Path::new(input_path)
+                .with_extension(if use_max_ssa { "max_ssa.dot" } else { "ssa.dot" })
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            dump_ssa_val.clone()
+        };
+        let content = ssa::ir::dump_program_ssa_dot(&ssa_builders);
+        fs::write(&path, content)?;
+        println!("Dumped SSA CFG to {}", path);
+    }
+
+    for s in &mut ssa_builders {
+        ssa::passes::optimizer(s)?;
+        ssa::critical_edge::split_critical_edges(s);
+        ssa::prune_unreachable(s);
+    }
 
     println!("=== SSA IR ===");
     for sb in &ssa_builders {
@@ -82,14 +115,7 @@ fn main() -> Result<()> {
         println!("{:?}", sb);
     }
 
-    // For the rest of the pipeline, operate on @main (or the first function).
-    let main_idx = ssa_builders
-        .iter()
-        .position(|b| b.name == "main")
-        .unwrap_or(0);
-    let ssa_builder = &ssa_builders[main_idx];
-    println!("=== After Critical Edge Splitting ===");
-    println!("{:?}", ssa_builder);
+
 
     // ── Global block-ID map (entry block ID for each function) ──────────
     // Used for multi-function codegen so `.Lbb_N` labels are globally unique.
@@ -103,14 +129,13 @@ fn main() -> Result<()> {
         map
     };
 
-    //
-
-
     // ── Rogers pipeline (Ian Rogers 2020, phi-based, no regalloc2) ───
     let mut fn_lowered_info = Vec::new();
     for sb in &ssa_builders {
-        let (num_spillslots, lowered) = if use_braun {
-            crate::regalloc::badapter::run_regalloc_b(sb, target)
+        let (num_spillslots, lowered) = if use_braun_v2 {
+            crate::regalloc::badapter_v2::run_regalloc_b_v2(sb, target, check_regalloc)
+        } else if use_braun {
+            crate::regalloc::badapter::run_regalloc_b(sb, target, check_regalloc)
         } else {
             crate::regalloc::run_regalloc(sb, target)
         };
@@ -119,8 +144,10 @@ fn main() -> Result<()> {
     }
 
     let assembly = crate::codegen::generate_program(&fn_lowered_info, target);
-    println!("{}", assembly);
-    fs::write("out.s", &assembly)?;
-
+    let output_path = matches
+        .get_one::<String>("output")
+        .ok_or_else(|| anyhow::anyhow!("--view was not set, so an output path is required"))?;
+    fs::write(output_path, &assembly)?;
+    println!("assembly written to {}", output_path);
     Ok(())
 }

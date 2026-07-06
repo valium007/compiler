@@ -12,7 +12,11 @@ use crate::regalloc::regalloc_ir::{self, LoweredInst};
 use crate::regalloc::Target;
 use crate::ssa::ir::{Builder as SsaBuilder, IrInstruction, SsaValue, SsaVariable};
 
-pub fn run_regalloc_b(ssa: &SsaBuilder, target: Target) -> (usize, Vec<Vec<LoweredInst>>) {
+pub fn run_regalloc_b(
+    ssa: &SsaBuilder,
+    target: Target,
+    check: bool,
+) -> (usize, Vec<Vec<LoweredInst>>) {
     let (agnostic, mapper) = BAgnosticFunc::new(ssa, target);
 
     // Build the allocatable pool by converting machine_env's bregalloc-typed
@@ -30,6 +34,20 @@ pub fn run_regalloc_b(ssa: &SsaBuilder, target: Target) -> (usize, Vec<Vec<Lower
 
     let result = bregalloc::allocate(&agnostic, &allocatable)
         .expect("bregalloc allocation failed");
+
+    if check {
+        // Secondary check first: if two simultaneously-live vregs share a
+        // Reg home, the bug is in assignment/liveness, not output. Report
+        // separately for clarity.
+        if let Err(e) = bregalloc::checker::verify_homes_disjoint(&agnostic, &result) {
+            eprintln!("homes-disjoint check FAILED (assignment-phase bug): {e}");
+        }
+        if let Err(e) = bregalloc::checker::verify(&agnostic, &result) {
+            bregalloc::checker::dump_context(&agnostic, &result, &e);
+            panic!("bregalloc symbolic checker rejected allocation: {e}");
+        }
+        eprintln!("bregalloc symbolic checker: ok ({} insts)", result.inst_allocs.len());
+    }
 
     // Lower using AllocationResult — identical shape to xregalloc's path.
     let mut lowered: Vec<Vec<LoweredInst>> = Vec::new();
@@ -131,39 +149,17 @@ impl BAgnosticFunc {
         for block in &ssa.blocks {
             for instr in &block.instrs {
                 match instr {
-                    IrInstruction::PhiAssign(phi) => {
-                        mapper.get(phi.var);
-                        for &(op, _) in &phi.operands {
-                            mapper.get(op);
+                    // Generic operand walk via the new visitor helpers. Defs
+                    // are statically SsaValue but always hold Var; uses can be
+                    // Var/Int/Bool/Undef.
+                    inst => {
+                        for d in inst.defs() {
+                            mapper.get(d.expect_var());
+                        }
+                        for u in inst.uses() {
+                            if let SsaValue::Var(v) = u { mapper.get(*v); }
                         }
                     }
-                    IrInstruction::Const(dst, _) => { mapper.get(*dst); }
-                    IrInstruction::Mov(dst, src) => {
-                        mapper.get(*dst);
-                        if let SsaValue::Var(v) = src { mapper.get(*v); }
-                    }
-                    IrInstruction::Binary(_, dst, lhs, rhs) => {
-                        mapper.get(*dst);
-                        if let SsaValue::Var(v) = lhs { mapper.get(*v); }
-                        if let SsaValue::Var(v) = rhs { mapper.get(*v); }
-                    }
-                    IrInstruction::Not(dst, src) => {
-                        mapper.get(*dst);
-                        if let SsaValue::Var(v) = src { mapper.get(*v); }
-                    }
-                    IrInstruction::Print(src) | IrInstruction::Ret(src) => {
-                        if let SsaValue::Var(v) = src { mapper.get(*v); }
-                    }
-                    IrInstruction::Br(cond, _, _) => {
-                        if let SsaValue::Var(v) = cond { mapper.get(*v); }
-                    }
-                    IrInstruction::Call { dest, args, .. } => {
-                        if let Some(d) = dest { mapper.get(*d); }
-                        for arg in args {
-                            if let SsaValue::Var(v) = arg { mapper.get(*v); }
-                        }
-                    }
-                    _ => {}
                 }
             }
         }
@@ -264,8 +260,11 @@ impl BAgnosticFunc {
 
                 if let IrInstruction::PhiAssign(phi) = instr {
                     let mut op_map = HashMap::new();
-                    for &(op_var, pred_b) in &phi.operands {
-                        op_map.insert(pred_b, bregalloc::Var::int(mapper.get(op_var)));
+                    for (op_val, pred_b) in &phi.operands {
+                        op_map.insert(
+                            *pred_b,
+                            bregalloc::Var::int(mapper.get(op_val.expect_var())),
+                        );
                     }
                     phi_info.push(Some(op_map));
                 } else {
@@ -356,14 +355,14 @@ fn build_operands(
     match inst {
         IrInstruction::Const(dst, _) => {
             ops.push(Operand {
-                var: Var::int(mapper.get(*dst)),
+                var: Var::int(mapper.get(dst.expect_var())),
                 constraint: Constraint::Any,
                 kind: OperandKind::Def,
             });
         }
         IrInstruction::Mov(dst, src) => {
             ops.push(Operand {
-                var: Var::int(mapper.get(*dst)),
+                var: Var::int(mapper.get(dst.expect_var())),
                 constraint: Constraint::Any,
                 kind: OperandKind::Def,
             });
@@ -386,7 +385,7 @@ fn build_operands(
                 Constraint::Any
             };
             ops.push(Operand {
-                var: Var::int(mapper.get(*dst)),
+                var: Var::int(mapper.get(dst.expect_var())),
                 constraint: dst_constraint,
                 kind: OperandKind::Def,
             });
@@ -411,7 +410,7 @@ fn build_operands(
         }
         IrInstruction::Not(dst, src) => {
             ops.push(Operand {
-                var: Var::int(mapper.get(*dst)),
+                var: Var::int(mapper.get(dst.expect_var())),
                 constraint: Constraint::Any,
                 kind: OperandKind::Def,
             });
@@ -463,7 +462,7 @@ fn build_operands(
             };
             if let Some(d) = dest {
                 ops.push(Operand {
-                    var: Var::int(mapper.get(*d)),
+                    var: Var::int(mapper.get(d.expect_var())),
                     constraint: Constraint::Fixed(PReg::int(ret_reg)),
                     kind: OperandKind::Def,
                 });
@@ -491,7 +490,7 @@ fn build_operands(
         }
         IrInstruction::PhiAssign(phi) => {
             ops.push(Operand {
-                var: Var::int(mapper.get(phi.var)),
+                var: Var::int(mapper.get(phi.var.expect_var())),
                 constraint: Constraint::Any,
                 kind: OperandKind::Def,
             });

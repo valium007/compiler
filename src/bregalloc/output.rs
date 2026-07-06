@@ -183,10 +183,9 @@ pub fn build<F: AllocFunction>(input: OutputInput<F>) -> AllocationResult {
 }
 
 fn home_alloc(vreg_alloc: &HashMap<Var, Allocation>, v: Var) -> Allocation {
-    vreg_alloc
+    *vreg_alloc
         .get(&v)
-        .copied()
-        .unwrap_or(Allocation::Reg(PReg::new(0, v.class)))
+        .unwrap_or_else(|| panic!("var {:?} has no allocation — assignment pass missed it", v))
 }
 
 fn take_scratch(
@@ -228,62 +227,60 @@ fn emit_phi_resolution<F: AllocFunction>(
     }
 
     for b in 0..n_blocks {
-        // Collect per-successor copies, then sequentialize each.
+        // Collect per-successor copies partitioned by register class so that
+        // cycle-breaking temps are always drawn from the correct class pool.
         for &succ in func.block_successors(b) {
-            let mut copies: Vec<(Allocation, Allocation)> = Vec::new();
+            // copies_by_class: class → [(src_alloc, dst_alloc)]
+            let mut copies_by_class: HashMap<RegClass, Vec<(Allocation, Allocation)>> =
+                HashMap::new();
             for inst in func.block_instructions(succ) {
                 if !func.is_phi(inst) {
                     continue;
                 }
-                let Some(dst_op) = func.inst_operands(inst).first() else { continue };
-                if dst_op.kind != OperandKind::Def {
-                    continue;
-                }
+                let Some(dst_op) = func.inst_operands(inst).iter().find(|op| op.kind == OperandKind::Def)
+                else { continue };
+                let class = dst_op.var.class;
                 let dst_alloc = home_alloc(vreg_alloc, dst_op.var);
                 let src_var = func.phi_op(inst, b);
                 let src_alloc = home_alloc(vreg_alloc, src_var);
-                copies.push((src_alloc, dst_alloc));
+                copies_by_class.entry(class).or_default().push((src_alloc, dst_alloc));
             }
-            if copies.is_empty() {
+            if copies_by_class.is_empty() {
                 continue;
             }
 
-            // Use the first scratch of each class on demand. Stack→Stack
-            // pairs get expanded post-sequentialize.
-            let int_scratches: Vec<Allocation> = scratch_by_class
-                .get(&RegClass::Int)
-                .map(|v| v.iter().map(|p| Allocation::Reg(*p)).collect())
-                .unwrap_or_default();
-            let mut cycle_idx = 0usize;
-            let get_temp = || -> Allocation {
-                // For now we only handle Int-class cycle temps. A more
-                // general impl would pick by class of the copy involved.
-                let t = int_scratches
-                    .get(cycle_idx)
-                    .copied()
-                    .expect("phi resolution exhausted scratch pool");
-                cycle_idx += 1;
-                t
-            };
-
-            let seq = parallel_move::sequentialize(&copies, get_temp);
-
-            // Expand Stack→Stack pairs via the first available class-Int
-            // scratch (reused across all such pairs because the sequence
-            // is already sequential — no parallel-copy semantics post-
-            // sequentialize).
-            let stack_shuttle = int_scratches.first().copied();
             let term_inst = func.block_instructions(b).end.saturating_sub(1);
             let emit_at = edits_before.entry(term_inst).or_default();
-            for (src, dst) in seq {
-                if src.is_stack() && dst.is_stack() {
-                    if let Some(shuttle) = stack_shuttle {
-                        emit_at.push(AllocMove { from: src, to: shuttle });
-                        emit_at.push(AllocMove { from: shuttle, to: dst });
-                        continue;
+
+            for (class, copies) in &copies_by_class {
+                let class_scratches: Vec<Allocation> = scratch_by_class
+                    .get(class)
+                    .map(|v| v.iter().map(|p| Allocation::Reg(*p)).collect())
+                    .unwrap_or_default();
+                let mut cycle_idx = 0usize;
+                let get_temp = || -> Allocation {
+                    let t = class_scratches
+                        .get(cycle_idx)
+                        .copied()
+                        .expect("phi resolution exhausted scratch pool");
+                    cycle_idx += 1;
+                    t
+                };
+
+                let seq = parallel_move::sequentialize(copies, get_temp);
+
+                // Expand Stack→Stack pairs through a same-class scratch.
+                let stack_shuttle = class_scratches.first().copied();
+                for (src, dst) in seq {
+                    if src.is_stack() && dst.is_stack() {
+                        if let Some(shuttle) = stack_shuttle {
+                            emit_at.push(AllocMove { from: src, to: shuttle });
+                            emit_at.push(AllocMove { from: shuttle, to: dst });
+                            continue;
+                        }
                     }
+                    emit_at.push(AllocMove { from: src, to: dst });
                 }
-                emit_at.push(AllocMove { from: src, to: dst });
             }
         }
     }

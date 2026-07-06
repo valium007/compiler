@@ -1,8 +1,7 @@
-pub mod parallel_move;
 pub mod regalloc_ir;
 pub mod machine_env;
 pub mod badapter;
-
+pub mod badapter_v2;
 use crate::ssa::ir::{Builder as SsaBuilder, IrInstruction, SsaValue, SsaVariable};
 pub use machine_env::Target;
 use regalloc_ir::LoweredInst;
@@ -19,7 +18,7 @@ fn sequentialize_vars(parallel_copies: &[VarCopy], get_temp: impl FnMut() -> Ssa
     let pairs: Vec<(SsaVariable, SsaVariable)> = parallel_copies.iter()
         .map(|c| (c.src, c.dst))
         .collect();
-    let seq = parallel_move::sequentialize(&pairs, get_temp);
+    let seq = crate::ssa::parallel_move::sequentialize(&pairs, get_temp);
     seq.into_iter()
         .map(|(src, dst)| VarCopy { src, dst })
         .collect()
@@ -46,32 +45,35 @@ pub fn lower_phis_to_parallel_moves(ssa: &mut SsaBuilder) {
         for pred in predecessors {
             let mut parallel_copies = Vec::new();
             for phi in &phis {
-                if let Some(&(src_var, _)) = phi.operands.iter().find(|&&(_, from_b)| from_b == pred) {
+                // Phi operands are always Var by invariant.
+                if let Some((src_val, _)) =
+                    phi.operands.iter().find(|(_, from_b)| *from_b == pred)
+                {
                     parallel_copies.push(VarCopy {
-                        src: src_var,
-                        dst: phi.var,
+                        src: src_val.expect_var(),
+                        dst: phi.var.expect_var(),
                     });
                 }
             }
-            
+
             let seq = sequentialize_vars(&parallel_copies, || ssa.get_fresh_var());
             block_copies[pred].extend(seq);
         }
     }
-    
+
     for b in 0..num_blocks {
         let copies = std::mem::take(&mut block_copies[b]);
         if copies.is_empty() {
             continue;
         }
-        
+
         let block = &mut ssa.blocks[b];
         let has_terminator = block.instrs.last().map_or(false, |inst| {
             matches!(inst, IrInstruction::Jmp(_) | IrInstruction::Br(_, _, _) | IrInstruction::Ret(_))
         });
-        
+
         let new_instrs: Vec<IrInstruction> = copies.into_iter()
-            .map(|c| IrInstruction::Mov(c.dst, SsaValue::Var(c.src)))
+            .map(|c| IrInstruction::Mov(SsaValue::Var(c.dst), SsaValue::Var(c.src)))
             .collect();
             
         if has_terminator {
@@ -200,10 +202,10 @@ fn emit_phi_resolution(
     for &succ in &ssa.blocks[b].successors {
         for inst in &ssa.blocks[succ].instrs {
             let IrInstruction::PhiAssign(phi) = inst else { continue };
-            let dst_alloc = lookup(phi.var);
-            for &(src_var, from_b) in &phi.operands {
-                if from_b == b {
-                    let src_alloc = lookup(src_var);
+            let dst_alloc = lookup(phi.var.expect_var());
+            for (src_val, from_b) in &phi.operands {
+                if *from_b == b {
+                    let src_alloc = lookup(src_val.expect_var());
                     copies.push((src_alloc, dst_alloc));
                     break;
                 }
@@ -325,51 +327,14 @@ impl AgnosticFunc {
             mapper.get(param);
         }
 
-        // Pre-register all variables in the SSA builder
+        // Pre-register all variables in the SSA builder via the new visitor.
         for block in &ssa.blocks {
             for instr in &block.instrs {
-                match instr {
-                    IrInstruction::PhiAssign(phi) => {
-                        mapper.get(phi.var);
-                        for &(op, _) in &phi.operands {
-                            mapper.get(op);
-                        }
-                    }
-                    IrInstruction::Const(dst, _) => {
-                        mapper.get(*dst);
-                    }
-                    IrInstruction::Mov(dst, src) => {
-                        mapper.get(*dst);
-                        if let SsaValue::Var(v) = src {
-                            mapper.get(*v);
-                        }
-                    }
-                    IrInstruction::Binary(_, dst, lhs, rhs) => {
-                        mapper.get(*dst);
-                        if let SsaValue::Var(v) = lhs { mapper.get(*v); }
-                        if let SsaValue::Var(v) = rhs { mapper.get(*v); }
-                    }
-                    IrInstruction::Not(dst, src) => {
-                        mapper.get(*dst);
-                        if let SsaValue::Var(v) = src { mapper.get(*v); }
-                    }
-                    IrInstruction::Print(src) | IrInstruction::Ret(src) => {
-                        if let SsaValue::Var(v) = src { mapper.get(*v); }
-                    }
-                    IrInstruction::Br(cond, _, _) => {
-                        if let SsaValue::Var(v) = cond { mapper.get(*v); }
-                    }
-                    IrInstruction::Call { dest, args, .. } => {
-                        if let Some(d) = dest {
-                            mapper.get(*d);
-                        }
-                        for arg in args {
-                            if let SsaValue::Var(v) = arg {
-                                mapper.get(*v);
-                            }
-                        }
-                    }
-                    IrInstruction::Jmp(_) | IrInstruction::Nop => {}
+                for d in instr.defs() {
+                    mapper.get(d.expect_var());
+                }
+                for u in instr.uses() {
+                    if let SsaValue::Var(v) = u { mapper.get(*v); }
                 }
             }
         }
@@ -460,8 +425,11 @@ impl AgnosticFunc {
                 // Build phi info
                 if let IrInstruction::PhiAssign(phi) = instr {
                     let mut op_map = HashMap::new();
-                    for &(op_var, pred_b) in &phi.operands {
-                        op_map.insert(pred_b, xregalloc::Var::int(mapper.get(op_var)));
+                    for (op_val, pred_b) in &phi.operands {
+                        op_map.insert(
+                            *pred_b,
+                            xregalloc::Var::int(mapper.get(op_val.expect_var())),
+                        );
                     }
                     phi_info.push(Some(op_map));
                 } else {
@@ -558,6 +526,28 @@ impl xregalloc::AllocFunction for AgnosticFunc {
     fn is_copy(&self, inst: usize) -> bool {
         self.copy_info[inst]
     }
+
+    /// Logical-slot size per regclass. A logical slot is one 8-byte qword on
+    /// the stack frame (matching `slot.index() * 8 + 8` in codegen).
+    ///
+    /// Only x86 today; AArch64 will need its own table once a Float/Vector
+    /// class is introduced there.
+    fn spillslot_size(&self, regclass: xregalloc::RegClass) -> usize {
+        match self.target {
+            Target::X86_64 => match regclass {
+                // GPR — single qword on the stack.
+                xregalloc::RegClass::Int => 1,
+                // x87 / SSE scalar — 64-bit fits in one slot.
+                xregalloc::RegClass::Float => 1,
+                // 128-bit XMM. Width 2 also forces 2-slot (= 16-byte)
+                // alignment via xregalloc's align_up — needed if codegen
+                // ever wants `movdqa` instead of `movdqu`. Bump to 4 for
+                // YMM, 8 for ZMM if/when those classes are introduced.
+                xregalloc::RegClass::Vector => 2,
+            },
+            Target::Aarch64 => 1,
+        }
+    }
 }
 
 fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Target) -> Vec<xregalloc::Operand> {
@@ -565,14 +555,14 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
     match inst {
         IrInstruction::Const(dst, _) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var::int(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(dst.expect_var())),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });
         }
         IrInstruction::Mov(dst, src) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var::int(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(dst.expect_var())),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });
@@ -598,7 +588,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
             };
 
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var::int(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(dst.expect_var())),
                 constraint: dst_constraint,
                 kind: xregalloc::OperandKind::Def,
             });
@@ -619,7 +609,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         }
         IrInstruction::Not(dst, src) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var::int(mapper.get(*dst)),
+                var: xregalloc::Var::int(mapper.get(dst.expect_var())),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });
@@ -665,7 +655,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
             };
             if let Some(d) = dest {
                 ops.push(xregalloc::Operand {
-                    var: xregalloc::Var::int(mapper.get(*d)),
+                    var: xregalloc::Var::int(mapper.get(d.expect_var())),
                     constraint: xregalloc::Constraint::Fixed(ret_reg),
                     kind: xregalloc::OperandKind::Def,
                 });
@@ -695,7 +685,7 @@ fn get_inst_operands(inst: &IrInstruction, mapper: &mut VarMapper, target: Targe
         }
         IrInstruction::PhiAssign(phi) => {
             ops.push(xregalloc::Operand {
-                var: xregalloc::Var::int(mapper.get(phi.var)),
+                var: xregalloc::Var::int(mapper.get(phi.var.expect_var())),
                 constraint: xregalloc::Constraint::Any,
                 kind: xregalloc::OperandKind::Def,
             });

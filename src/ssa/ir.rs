@@ -2,6 +2,11 @@ use std::fmt::Debug;
 
 use std::collections::{HashMap, HashSet};
 
+use petgraph::Graph;
+use petgraph::algo::tarjan_scc;
+use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::dot::{Dot, Config};
+
 pub type InstId = usize;
 pub type ValueId = usize;
 pub type VariableId = usize;
@@ -19,7 +24,7 @@ impl Debug for SsaVariable {
     }
 }
 
-#[derive(Clone, Eq, PartialEq)]
+#[derive(Copy, Clone, Eq, PartialEq, Hash)]
 pub enum SsaValue {
     Var(SsaVariable),
     Int(i64),
@@ -39,12 +44,25 @@ impl Debug for SsaValue {
 }
 
 impl SsaValue {
-    pub fn variable(&self) -> SsaVariable {
+    /// Extract the underlying `SsaVariable`. Panics if `self` is not a Var —
+    /// use this at def sites, where the type allows `SsaValue` but the
+    /// runtime invariant is that defs hold `Var`.
+    pub fn expect_var(&self) -> SsaVariable {
         match self {
             SsaValue::Var(v) => *v,
-            _ => panic!("Expected variable"),
+            other => panic!("expected SsaValue::Var, got {:?}", other),
         }
     }
+
+    /// Non-panicking variant.
+    pub fn as_var(&self) -> Option<SsaVariable> {
+        match self {
+            SsaValue::Var(v) => Some(*v),
+            _ => None,
+        }
+    }
+
+    pub fn is_var(&self) -> bool { matches!(self, SsaValue::Var(_)) }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq)]
@@ -65,8 +83,11 @@ pub enum BinaryOp {
 #[derive(Clone, Eq, PartialEq)]
 pub struct Phi {
     pub block: BasicBlockId,
-    pub var: SsaVariable,
-    pub operands: Vec<(SsaVariable, BasicBlockId)>,
+    /// Phi destination. Statically `SsaValue` for type uniformity with
+    /// `IrInstruction`'s operand positions; runtime invariant: always Var.
+    pub var: SsaValue,
+    /// Phi operands. Statically `SsaValue`; runtime invariant: always Var.
+    pub operands: Vec<(SsaValue, BasicBlockId)>,
 }
 
 impl Debug for Phi {
@@ -87,13 +108,18 @@ impl Debug for Phi {
     }
 }
 
+/// SSA instructions. Every operand position is typed `SsaValue` for
+/// uniform pass-authoring. Defs (first `SsaValue` in `Const`/`Mov`/`Binary`/
+/// `Not`, the dest of `Call`, and `Phi::var`) are statically `SsaValue` but
+/// must hold `SsaValue::Var(_)` at runtime — use `SsaValue::expect_var()`
+/// at the consumer to recover the underlying `SsaVariable`.
 #[derive(Clone, Eq, PartialEq)]
 pub enum IrInstruction {
-    Const(SsaVariable, SsaValue),
-    Mov(SsaVariable, SsaValue),
-    Binary(BinaryOp, SsaVariable, SsaValue, SsaValue),
+    Const(SsaValue, SsaValue),
+    Mov(SsaValue, SsaValue),
+    Binary(BinaryOp, SsaValue, SsaValue, SsaValue),
     PhiAssign(Phi),
-    Not(SsaVariable, SsaValue),
+    Not(SsaValue, SsaValue),
     Print(SsaValue),
     Jmp(BasicBlockId),
     Br(SsaValue, BasicBlockId, BasicBlockId),
@@ -101,7 +127,7 @@ pub enum IrInstruction {
     Call {
         callee_bb: usize,
         args: Vec<SsaValue>,
-        dest: Option<SsaVariable>,
+        dest: Option<SsaValue>,
     },
     Nop,
 }
@@ -133,7 +159,7 @@ impl Debug for IrInstruction {
                 }
                 Ok(())
             }
-            IrInstruction::Nop => write!(f, "nop"),
+            IrInstruction::Nop => Ok(()),
         }
     }
 }
@@ -154,9 +180,74 @@ impl IrInstruction {
     }
 
     pub fn is_phi(&self) -> bool {
+        matches!(self, IrInstruction::PhiAssign(_))
+    }
+
+    /// Operands that this instruction defines (writes). Returns 0 or 1
+    /// element except for instructions that don't define anything.
+    pub fn defs(&self) -> Vec<&SsaValue> {
         match self {
-            IrInstruction::PhiAssign(_) => true,
-            _ => false,
+            IrInstruction::Const(d, _)
+            | IrInstruction::Mov(d, _)
+            | IrInstruction::Binary(_, d, _, _)
+            | IrInstruction::Not(d, _) => vec![d],
+            IrInstruction::PhiAssign(p) => vec![&p.var],
+            IrInstruction::Call { dest: Some(d), .. } => vec![d],
+            IrInstruction::Call { dest: None, .. }
+            | IrInstruction::Print(_)
+            | IrInstruction::Jmp(_)
+            | IrInstruction::Br(_, _, _)
+            | IrInstruction::Ret(_)
+            | IrInstruction::Nop => vec![],
+        }
+    }
+
+    /// Operands that this instruction uses (reads), in left-to-right order.
+    /// For `PhiAssign`, returns each phi-operand value (without its predecessor
+    /// label — use `inst.phi().operands` if you need both).
+    pub fn uses(&self) -> Vec<&SsaValue> {
+        match self {
+            IrInstruction::Const(_, s)
+            | IrInstruction::Mov(_, s)
+            | IrInstruction::Not(_, s)
+            | IrInstruction::Print(s)
+            | IrInstruction::Br(s, _, _)
+            | IrInstruction::Ret(s) => vec![s],
+            IrInstruction::Binary(_, _, l, r) => vec![l, r],
+            IrInstruction::PhiAssign(p) => p.operands.iter().map(|(o, _)| o).collect(),
+            IrInstruction::Call { args, .. } => args.iter().collect(),
+            IrInstruction::Jmp(_) | IrInstruction::Nop => vec![],
+        }
+    }
+
+    pub fn for_each_def_mut(&mut self, mut f: impl FnMut(&mut SsaValue)) {
+        match self {
+            IrInstruction::Const(d, _)
+            | IrInstruction::Mov(d, _)
+            | IrInstruction::Binary(_, d, _, _)
+            | IrInstruction::Not(d, _) => f(d),
+            IrInstruction::PhiAssign(p) => f(&mut p.var),
+            IrInstruction::Call { dest: Some(d), .. } => f(d),
+            _ => {}
+        }
+    }
+
+    pub fn for_each_use_mut(&mut self, mut f: impl FnMut(&mut SsaValue)) {
+        match self {
+            IrInstruction::Const(_, s)
+            | IrInstruction::Mov(_, s)
+            | IrInstruction::Not(_, s)
+            | IrInstruction::Print(s)
+            | IrInstruction::Br(s, _, _)
+            | IrInstruction::Ret(s) => f(s),
+            IrInstruction::Binary(_, _, l, r) => { f(l); f(r); }
+            IrInstruction::PhiAssign(p) => {
+                for (o, _) in p.operands.iter_mut() { f(o); }
+            }
+            IrInstruction::Call { args, .. } => {
+                for a in args.iter_mut() { f(a); }
+            }
+            IrInstruction::Jmp(_) | IrInstruction::Nop => {}
         }
     }
 }
@@ -245,7 +336,7 @@ impl Builder {
             params: Vec::new(),
         }
     }
-
+    
     pub fn write_variable(&mut self, var: VariableId, bb: BasicBlockId) -> SsaVariable {
         if let Some(v) = self.variables.get_mut(&var) {
             v.index += 1;
@@ -287,7 +378,11 @@ impl Builder {
             variable = self.get_fresh_var();
             let phi = self.inst_phi(variable, bb);
             self.write_variable_internal(var, bb, variable);
-            let resolved = self.add_phi_operands(var, bb, phi);
+            // add_phi_operands returns None only when the phi was already
+            // tombstoned by a prior call in the same chain — which cannot
+            // happen here because `phi` was just created.  The .unwrap_or
+            // is purely defensive.
+            let resolved = self.add_phi_operands(var, bb, phi).unwrap_or(variable);
             self.write_variable_internal(var, bb, resolved);
             return resolved;
         }
@@ -300,54 +395,73 @@ impl Builder {
         var: VariableId,
         bb: BasicBlockId,
         phi: InstId,
-    ) -> SsaVariable {
+    ) -> Option<SsaVariable> {
         let preds = self.get_block(bb).predecessors.clone();
         for pred in preds.iter() {
             let pred_var = self.read_variable(var, *pred);
-            self.get_block_mut(bb).instrs[phi].phi_mut().operands.push((pred_var, *pred));
+            self.get_block_mut(bb).instrs[phi]
+                .phi_mut()
+                .operands
+                .push((SsaValue::Var(pred_var), *pred));
         }
         // All operands now present — try_remove_trivial_phi's partial-operand
         // guard will pass and the full check will run.
         self.try_remove_trivial_phi(phi, bb)
     }
 
-    pub fn try_remove_trivial_phi(&mut self, phi: InstId, bb: BasicBlockId) -> SsaVariable {
+    /// Try to remove a trivial phi (Algorithm 3 from Braun et al.).
+    ///
+    /// Returns `Some(var)` — the variable that should be used in place of this
+    /// phi (may equal `phi_var` if the phi is non-trivial and was kept).
+    /// Returns `None` if the instruction slot was already tombstoned by an
+    /// earlier call in the same recursive chain; callers should treat this as
+    /// "already handled" and ignore the result.
+    pub fn try_remove_trivial_phi(&mut self, phi: InstId, bb: BasicBlockId) -> Option<SsaVariable> {
         // Already tombstoned by a prior call in the same chain.
         if !self.get_block(bb).instrs[phi].is_phi() {
-            return SsaVariable { id: usize::MAX, index: 0 };
+            return None;
         }
 
-        let phi_var = self.get_block(bb).instrs[phi].phi().var;
+        // Phi.var is statically SsaValue but always holds Var.
+        let phi_var_val: SsaValue = self.get_block(bb).instrs[phi].phi().var.clone();
+        let phi_var: SsaVariable = phi_var_val.expect_var();
 
         let n_preds = self.get_block(bb).predecessors.len();
         let n_ops   = self.get_block(bb).instrs[phi].phi().operands.len();
         if n_ops < n_preds {
-            return phi_var;
+            return Some(phi_var);
         }
 
+        // `same` tracks the candidate single operand; phi operands are always
+        // Var, so we track them as SsaVariable for downstream use.
         let mut same: Option<SsaVariable> = None;
         for (op, _) in self.get_block(bb).instrs[phi].phi().operands.clone().iter() {
-            if Some(*op) == same || *op == phi_var {
+            let op_var = op.expect_var();
+            if Some(op_var) == same || op_var == phi_var {
                 continue;
             }
             if same.is_some() {
-                return phi_var;
+                return Some(phi_var);
             }
-            same = Some(*op);
+            same = Some(op_var);
         }
 
         if same.is_none() {
-            // Unreachable phi (block has 0 preds, or only self-references).
-            // Recycle phi_var by replacing the phi slot in place with a
-            // `Const 0` that defines phi_var.  Existing uses keep their
-            // references; phi_var now resolves to a concrete SSA value
-            // instead of an undef phi (avoids SsaValue::Undef leaking into
-            // instruction operands downstream).
-            self.get_block_mut(bb).instrs[phi] =
-                IrInstruction::Const(phi_var, SsaValue::Int(0));
-            return phi_var;
+            // Unreachable phi — all operands are self-references, or there
+            // are no operands at all.  Per Algorithm 3 this becomes Undef.
+            // Replace every use of phi_var with Undef, then tombstone the slot.
+            self.replace_phi_uses(phi_var, SsaValue::Undef);
+            self.get_block_mut(bb).instrs[phi] = IrInstruction::Nop;
+            return Some(phi_var);
         }
         let resolved = same.unwrap();
+
+        // Snapshot users of phi_var BEFORE replacement (Algorithm 3: collect
+        // phi.users first, then replaceBy(same), then recurse on those users).
+        // Collecting after replacement gives get_phi_users(resolved) which is
+        // a superset — it includes phis that already held `resolved` before
+        // this elimination, causing unnecessary extra recursive checks.
+        let users_to_recheck = self.get_phi_users(phi_var);
 
         self.replace_phi_uses(phi_var, SsaValue::Var(resolved));
         self.get_block_mut(bb).instrs[phi] = IrInstruction::Nop;
@@ -360,22 +474,22 @@ impl Builder {
             }
         }
 
-        let users = self.get_phi_users(resolved);
-        for (block, inst) in users {
+        for (block, inst) in users_to_recheck {
             if self.get_block(block).instrs[inst].is_phi() {
-                self.try_remove_trivial_phi(inst, block);
+                let _ = self.try_remove_trivial_phi(inst, block);
             }
         }
 
-        resolved
+        Some(resolved)
     }
 
     fn get_phi_users(&self, var: SsaVariable) -> Vec<(BasicBlockId, InstId)> {
+        let target = SsaValue::Var(var);
         let mut users = Vec::new();
         for block in self.blocks.iter() {
             for (i, inst) in block.instrs.iter().enumerate() {
                 if let IrInstruction::PhiAssign(phi) = inst {
-                    if phi.operands.iter().any(|(op, _)| *op == var) {
+                    if phi.operands.iter().any(|(op, _)| *op == target) {
                         users.push((block.id, i));
                     }
                 }
@@ -386,56 +500,29 @@ impl Builder {
 
     pub fn replace_phi_uses(&mut self, old: SsaVariable, new: SsaValue) {
         let old_val = SsaValue::Var(old);
+        let new_is_var = new.is_var();
         for block in self.blocks.iter_mut() {
             for inst in block.instrs.iter_mut() {
-                match inst {
-                    IrInstruction::PhiAssign(phi) => {
-                        // Phi operands are SsaVariable — they cannot represent
-                        // Undef.  Only replace when the new value is a Var.
-                        if let SsaValue::Var(new_var) = &new {
-                            for (op, _) in phi.operands.iter_mut() {
-                                if *op == old {
-                                    *op = *new_var;
-                                }
-                            }
-                        }
-                        // If new is Undef the phi operand stays as-is;
-                        // the phi itself will be tombstoned right after this call.
-                    }
-                    IrInstruction::Binary(_, _, src1, src2) => {
-                        if *src1 == old_val {
-                            *src1 = new.clone();
-                        }
-                        if *src2 == old_val {
-                            *src2 = new.clone();
-                        }
-                    }
-                    IrInstruction::Const(_, src)
-                    | IrInstruction::Mov(_, src)
-                    | IrInstruction::Not(_, src) => {
-                        if *src == old_val {
-                            *src = new.clone();
-                        }
-                    }
-                    IrInstruction::Print(src) | IrInstruction::Ret(src) => {
-                        if *src == old_val {
-                            *src = new.clone();
-                        }
-                    }
-                    IrInstruction::Br(cond, _, _) => {
-                        if *cond == old_val {
-                            *cond = new.clone();
-                        }
-                    }
-                    IrInstruction::Call { args, .. } => {
-                        for arg in args.iter_mut() {
-                            if *arg == old_val {
-                                *arg = new.clone();
+                // Phi operands carry an invariant: always Var. Skip substitution
+                // when `new` is not a Var — the caller will tombstone the phi
+                // immediately after (e.g. Undef path in try_remove_trivial_phi).
+                if let IrInstruction::PhiAssign(phi) = inst {
+                    if new_is_var {
+                        for (op, _) in phi.operands.iter_mut() {
+                            if *op == old_val {
+                                *op = new.clone();
                             }
                         }
                     }
-                    _ => {}
+                    continue;
                 }
+                // For every other instruction, rewrite each use position
+                // uniformly via the visitor helper.
+                inst.for_each_use_mut(|u| {
+                    if *u == old_val {
+                        *u = new.clone();
+                    }
+                });
             }
         }
     }
@@ -460,7 +547,7 @@ impl Builder {
 
         self.blocks[bb].instrs.push(IrInstruction::PhiAssign(Phi {
             block: bb,
-            var,
+            var: SsaValue::Var(var),
             operands: Vec::new(),
         }));
 
@@ -499,7 +586,7 @@ impl Builder {
     pub fn seal_block(&mut self, bb: BasicBlockId) {
         let incomplete = self.blocks[bb].incomplete_phis.clone();
         for (var, phi) in incomplete.iter() {
-            self.add_phi_operands(*var, bb, *phi);
+            let _ = self.add_phi_operands(*var, bb, *phi);
         }
         self.sealed.insert(bb);
     }
@@ -542,7 +629,7 @@ impl Builder {
             .filter_map(|&(bb, idx)| {
                 let instr = &self.blocks[bb].instrs[idx];
                 if instr.is_phi() {
-                    Some((instr.phi().var, (bb, idx)))
+                    Some((instr.phi().var.expect_var(), (bb, idx)))
                 } else {
                     None // already replaced with Nop
                 }
@@ -566,29 +653,35 @@ impl Builder {
         let node_index: HashMap<SsaVariable, usize> = live_refs
             .iter()
             .enumerate()
-            .map(|(i, &(bb, idx))| (self.blocks[bb].instrs[idx].phi().var, i))
+            .map(|(i, &(bb, idx))| (self.blocks[bb].instrs[idx].phi().var.expect_var(), i))
             .collect();
 
-        let mut adj: Vec<Vec<usize>> = vec![Vec::new(); n];
+        // Build a petgraph DiGraph — node weight = index into live_refs.
+        // An edge u → w means φ_u has φ_w as an operand.
+        let mut phi_graph: DiGraph<usize, ()> = DiGraph::with_capacity(n, n * 2);
+        let nodes: Vec<NodeIndex> = (0..n).map(|i| phi_graph.add_node(i)).collect();
         for (i, &(bb, idx)) in live_refs.iter().enumerate() {
             let phi = self.blocks[bb].instrs[idx].phi();
             for (op, _) in phi.operands.iter() {
-                if let Some(&j) = node_index.get(op) {
-                    adj[i].push(j);
+                // Phi operands are always Var by invariant.
+                let op_var = op.expect_var();
+                if let Some(&j) = node_index.get(&op_var) {
+                    phi_graph.add_edge(nodes[i], nodes[j], ());
                 }
             }
         }
 
-        // Tarjan's SCC — returns SCCs in *reverse* topological order (leaves last).
-        let sccs = Self::tarjan_scc(n, &adj);
+        // petgraph::algo::tarjan_scc returns SCCs in topological order of the
+        // condensation DAG (leaves/sinks first) — process forward, no .rev() needed.
+        let sccs = tarjan_scc(&phi_graph);
 
-        // Process in topological order = iterate sccs in reverse.
-        for scc_indices in sccs.iter().rev() {
+        for scc_nodes in &sccs {
+            let scc_indices: Vec<usize> = scc_nodes.iter().map(|&nx| phi_graph[nx]).collect();
             let scc_vars: HashSet<SsaVariable> = scc_indices
                 .iter()
                 .map(|&i| {
                     let (bb, idx) = live_refs[i];
-                    self.blocks[bb].instrs[idx].phi().var
+                    self.blocks[bb].instrs[idx].phi().var.expect_var()
                 })
                 .collect();
 
@@ -621,8 +714,9 @@ impl Builder {
             let phi = instr.phi();
             let mut is_inner = true;
             for (op, _) in phi.operands.iter() {
-                if !scc_vars.contains(op) {
-                    outer_ops.insert(*op);
+                let op_var = op.expect_var();
+                if !scc_vars.contains(&op_var) {
+                    outer_ops.insert(op_var);
                     is_inner = false;
                 }
             }
@@ -645,7 +739,7 @@ impl Builder {
                 .filter_map(|&i| {
                     let (bb, idx) = live_refs[i];
                     if self.blocks[bb].instrs[idx].is_phi() {
-                        Some(self.blocks[bb].instrs[idx].phi().var)
+                        Some(self.blocks[bb].instrs[idx].phi().var.expect_var())
                     } else {
                         None
                     }
@@ -669,75 +763,85 @@ impl Builder {
         }
     }
 
-    /// Tarjan's strongly connected components algorithm.
-    /// Returns SCCs in reverse topological order (first SCC = a root in the DAG).
-    fn tarjan_scc(n: usize, adj: &[Vec<usize>]) -> Vec<Vec<usize>> {
-        let mut index_counter = 0usize;
-        let mut stack: Vec<usize> = Vec::new();
-        let mut on_stack = vec![false; n];
-        let mut index = vec![usize::MAX; n];
-        let mut lowlink = vec![0usize; n];
-        let mut sccs: Vec<Vec<usize>> = Vec::new();
+    pub fn dump_cfg_dot(&self) -> String {
+        dump_program_ssa_dot(std::slice::from_ref(self))
+    }
+}
 
-        // Iterative Tarjan to avoid stack-overflow on large graphs.
-        // Each stack frame: (node, iterator position in adj[node]).
-        let mut call_stack: Vec<(usize, usize)> = Vec::new();
+#[derive(Debug)]
+pub struct SsaNodeData {
+    pub label: String,
+    pub xlabel: String,
+}
 
-        for start in 0..n {
-            if index[start] != usize::MAX {
-                continue;
-            }
+pub fn dump_program_ssa_dot(builders: &[Builder]) -> String {
+    let mut graph = Graph::<SsaNodeData, ()>::new();
+    let mut node_map = HashMap::new();
 
-            call_stack.push((start, 0));
-
-            while let Some((v, ei)) = call_stack.last_mut() {
-                let v = *v;
-                if index[v] == usize::MAX {
-                    // First visit.
-                    index[v] = index_counter;
-                    lowlink[v] = index_counter;
-                    index_counter += 1;
-                    stack.push(v);
-                    on_stack[v] = true;
+    for (fn_idx, builder) in builders.iter().enumerate() {
+        for block in &builder.blocks {
+            let mut label = String::new();
+            for (idx, instr) in block.instrs.iter().enumerate() {
+                if idx > 0 {
+                    label.push_str("\n");
                 }
+                label.push_str(&format!("{:?}", instr));
+            }
+            let xlabel = format!("@{}_bb_{}", builder.name, block.id);
+            let node_idx = graph.add_node(SsaNodeData { label, xlabel });
+            node_map.insert((fn_idx, block.id), node_idx);
+        }
+    }
 
-                let edges = &adj[v];
-                if *ei < edges.len() {
-                    let w = edges[*ei];
-                    *ei += 1;
-                    if index[w] == usize::MAX {
-                        call_stack.push((w, 0));
-                    } else if on_stack[w] {
-                        let lv = lowlink[v];
-                        lowlink[v] = lv.min(index[w]);
-                    }
-                } else {
-                    // Done with v's children.
-                    call_stack.pop();
-
-                    if let Some(&(parent, _)) = call_stack.last() {
-                        let lv = lowlink[parent];
-                        lowlink[parent] = lv.min(lowlink[v]);
-                    }
-
-                    // Is v a root of an SCC?
-                    if lowlink[v] == index[v] {
-                        let mut scc = Vec::new();
-                        loop {
-                            let w = stack.pop().unwrap();
-                            on_stack[w] = false;
-                            scc.push(w);
-                            if w == v {
-                                break;
-                            }
-                        }
-                        sccs.push(scc);
-                    }
+    for (fn_idx, builder) in builders.iter().enumerate() {
+        for block in &builder.blocks {
+            let u = node_map[&(fn_idx, block.id)];
+            for &succ_id in &block.successors {
+                if let Some(&v) = node_map.get(&(fn_idx, succ_id)) {
+                    graph.add_edge(u, v, ());
                 }
             }
         }
+    }
 
-        sccs
+    let dot = Dot::with_attr_getters(
+        &graph,
+        &[Config::EdgeNoLabel, Config::NodeNoLabel],
+        &|_, _| "".to_string(),
+        &|_, (_, node_data)| {
+            let escaped_label = node_data.label.replace("\"", "\\\"");
+            format!(
+                r#"shape=box, label="{}", xlabel="{}""#,
+                escaped_label, node_data.xlabel
+            )
+        },
+    );
+
+    format!("{:?}", dot)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dump_cfg_dot() {
+        let mut builder = Builder::new();
+        builder.name = "main".to_string();
+        builder.add_block(0, vec![], vec![1]);
+        let v0 = SsaVariable { id: 0, index: 0 };
+        builder.blocks[0].instrs.push(IrInstruction::Const(SsaValue::Var(v0), SsaValue::Int(42)));
+        builder.add_block(1, vec![0], vec![]);
+        builder.blocks[1].instrs.push(IrInstruction::Ret(SsaValue::Var(v0)));
+
+        let dot = builder.dump_cfg_dot();
+        println!("DOT:\n{}", dot);
+        assert!(dot.contains("shape=box"));
+        assert!(dot.contains("label=\"%v0_0 = const 42\""));
+        assert!(dot.contains("xlabel=\"@main_bb_0\""));
+        assert!(dot.contains("label=\"ret %v0_0\""));
+        assert!(dot.contains("xlabel=\"@main_bb_1\""));
+        assert!(dot.contains("0 -> 1 [ ]"));
     }
 }
 

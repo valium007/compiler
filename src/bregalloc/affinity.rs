@@ -140,24 +140,15 @@ impl AffinityChunks {
 }
 
 fn copy_pair(ops: &[super::Operand]) -> Option<(Var, Var)> {
-    if ops.len() >= 2
-        && ops[0].kind == OperandKind::Def
-        && ops[1].kind == OperandKind::Use
-    {
-        Some((ops[0].var, ops[1].var))
-    } else {
-        None
-    }
+    let dst = ops.iter().find(|op| op.kind == OperandKind::Def)?.var;
+    let src = ops.iter().find(|op| op.kind == OperandKind::Use)?.var;
+    Some((dst, src))
 }
 
 fn phi_dst(ops: &[super::Operand]) -> Option<Var> {
-    ops.first().and_then(|op| {
-        if op.kind == OperandKind::Def {
-            Some(op.var)
-        } else {
-            None
-        }
-    })
+    ops.iter()
+        .find(|op| op.kind == OperandKind::Def)
+        .map(|op| op.var)
 }
 
 fn compute_inst_block<F: AllocFunction>(func: &F) -> Vec<usize> {

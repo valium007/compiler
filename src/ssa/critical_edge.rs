@@ -98,7 +98,7 @@ pub fn split_critical_edges(builder: &mut Builder) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ssa::ir::{BinaryOp, Phi, SsaValue, SsaVariable};
+    use crate::ssa::ir::{Phi, SsaValue, SsaVariable};
 
     /// Helper: build a minimal diamond CFG with a critical edge and a phi.
     ///
@@ -130,12 +130,12 @@ mod tests {
 
         // bb_0: br v0 bb_1 bb_3  (two successors, bb_3 has >1 pred → critical!)
         b.add_block(0, vec![], vec![1, 3]);
-        b.blocks[0].instrs.push(IrInstruction::Const(v0, SsaValue::Bool(true)));
+        b.blocks[0].instrs.push(IrInstruction::Const(SsaValue::Var(v0), SsaValue::Bool(true)));
         b.blocks[0].instrs.push(IrInstruction::Br(SsaValue::Var(v0), 1, 3));
 
         // bb_1: some work, then jmp bb_3
         b.add_block(1, vec![0], vec![3]);
-        b.blocks[1].instrs.push(IrInstruction::Const(v1, SsaValue::Int(10)));
+        b.blocks[1].instrs.push(IrInstruction::Const(SsaValue::Var(v1), SsaValue::Int(10)));
         b.blocks[1].instrs.push(IrInstruction::Jmp(3));
 
         // bb_2: unused in this test but keeps IDs consistent
@@ -145,8 +145,8 @@ mod tests {
         b.add_block(3, vec![1, 0], vec![]);
         b.blocks[3].instrs.push(IrInstruction::PhiAssign(Phi {
             block: 3,
-            var: v3,
-            operands: vec![(v1, 1), (v2, 0)],
+            var: SsaValue::Var(v3),
+            operands: vec![(SsaValue::Var(v1), 1), (SsaValue::Var(v2), 0)],
         }));
         b.blocks[3].instrs.push(IrInstruction::Ret(SsaValue::Var(v3)));
 

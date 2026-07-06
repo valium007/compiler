@@ -2,6 +2,7 @@ pub mod critical_edge;
 pub mod ir;
 pub mod parallel_move;
 pub mod phi_to_move;
+pub mod passes;
 use crate::brilir;
 
 use brilir::builder::Builder as BrilBuilder;
@@ -75,14 +76,14 @@ pub fn build_ssa(bril: &BrilBuilder) -> Builder {
                     let bb = builder.current_block_id();
                     let dst_var = builder.write_variable(dst.0, bb);
                     let val = immediate_to_ssa_value(*imm);
-                    builder.add_instr(IrInstruction::Const(dst_var, val));
+                    builder.add_instr(IrInstruction::Const(SsaValue::Var(dst_var), val));
                 }
 
                 BrilIrInstruction::Mov(dst, src) => {
                     let src_val = as_ssa_value(&mut builder, *src);
                     let bb = builder.current_block_id();
                     let dst_var = builder.write_variable(dst.0, bb);
-                    builder.add_instr(IrInstruction::Mov(dst_var, src_val));
+                    builder.add_instr(IrInstruction::Mov(SsaValue::Var(dst_var), src_val));
                 }
 
                 BrilIrInstruction::Binary(op, dst, lhs, rhs) => {
@@ -91,14 +92,19 @@ pub fn build_ssa(bril: &BrilBuilder) -> Builder {
                     let bb = builder.current_block_id();
                     let dst_var = builder.write_variable(dst.0, bb);
                     let ssa_op = convert_binary_op(*op);
-                    builder.add_instr(IrInstruction::Binary(ssa_op, dst_var, lhs_val, rhs_val));
+                    builder.add_instr(IrInstruction::Binary(
+                        ssa_op,
+                        SsaValue::Var(dst_var),
+                        lhs_val,
+                        rhs_val,
+                    ));
                 }
 
                 BrilIrInstruction::Not(dst, src) => {
                     let src_val = as_ssa_value(&mut builder, *src);
                     let bb = builder.current_block_id();
                     let dst_var = builder.write_variable(dst.0, bb);
-                    builder.add_instr(IrInstruction::Not(dst_var, src_val));
+                    builder.add_instr(IrInstruction::Not(SsaValue::Var(dst_var), src_val));
                 }
 
                 BrilIrInstruction::Print(src) => {
@@ -138,7 +144,7 @@ pub fn build_ssa(bril: &BrilBuilder) -> Builder {
                     let ssa_dest = if let Some(dst_var) = dest {
                         let bb = builder.current_block_id();
                         let ssa_var = builder.write_variable(dst_var.0, bb);
-                        Some(ssa_var)
+                        Some(SsaValue::Var(ssa_var))
                     } else {
                         None
                     };
@@ -200,24 +206,23 @@ pub fn build_ssa(bril: &BrilBuilder) -> Builder {
     builder
 }
 
-/// Drop blocks that are unreachable from the entry block (bb_0).
+/// Drop blocks that are unreachable from the entry block (bb_0) and compact
+/// the block Vec, rewriting all block-ID references throughout the builder.
 ///
-/// After SSA construction the IR may contain blocks with no predecessors
-/// (other than the entry).  These are dead — they have no incoming control
-/// flow — but regalloc2 will still try to observe the classes of any vregs
-/// it sees, and panic on vregs that only appear in unreachable code.
-///
-/// This pass:
-///   1. Computes the reachable set via BFS from bb_0.
-///   2. For each unreachable block, clears its instructions and successor list.
-///   3. Removes the unreachable block from its successors' predecessor lists.
-///   4. Drops phi operands that came from unreachable predecessors.
-///   5. Re-runs trivial-phi removal on phis that lost operands.
+/// Steps:
+///   1. BFS from bb_0 to compute the reachable set.
+///   2. For each unreachable block, drop its phi operands from reachable
+///      successors (and re-run trivial-phi removal on those phis).
+///   3. Build a remapping table: old_id → new_id (None for removed blocks).
+///   4. Filter builder.blocks to only reachable blocks.
+///   5. Rewrite every block-ID reference: block.id, block.successors,
+///      block.predecessors, phi.block, phi operand pred IDs.
 pub fn prune_unreachable(builder: &mut Builder) {
     use ir::IrInstruction;
     let n = builder.blocks.len();
     if n == 0 { return; }
 
+    // ── Step 1: BFS reachability ──────────────────────────────────────────
     let mut reachable = vec![false; n];
     reachable[0] = true;
     let mut queue: Vec<usize> = vec![0];
@@ -231,18 +236,16 @@ pub fn prune_unreachable(builder: &mut Builder) {
         }
     }
 
-    let mut phis_to_recheck: Vec<(usize, usize)> = Vec::new();
+    // If everything is reachable there is nothing to do.
+    if reachable.iter().all(|&r| r) { return; }
 
+    // ── Step 2: sever dead predecessors from reachable successors ─────────
+    let mut phis_to_recheck: Vec<(usize, usize)> = Vec::new();
     for b in 0..n {
         if reachable[b] { continue; }
-        // Leave the unreachable block's body intact (so vregs defined here
-        // still have a def in the SSA, even though the block is dead).
-        // Just sever its outgoing edges so it can't pollute successors'
-        // liveness via phi operands.
         let old_succs = builder.blocks[b].successors.clone();
-        builder.blocks[b].successors.clear();
-
         for s in old_succs {
+            if !reachable[s] { continue; }
             builder.blocks[s].predecessors.retain(|&p| p != b);
             for (idx, inst) in builder.blocks[s].instrs.iter_mut().enumerate() {
                 if let IrInstruction::PhiAssign(phi) = inst {
@@ -256,7 +259,7 @@ pub fn prune_unreachable(builder: &mut Builder) {
         }
     }
 
-    // Recheck phis that lost operands — they may now be trivial.
+    // Re-run trivial-phi removal on phis that lost operands.
     for (block, inst) in phis_to_recheck {
         if builder.blocks[block].instrs.get(inst)
             .map(|i| i.is_phi()).unwrap_or(false)
@@ -265,8 +268,58 @@ pub fn prune_unreachable(builder: &mut Builder) {
         }
     }
 
-    // Drop Nops that try_remove_trivial_phi may have left behind.
+    // Drop Nops from trivial-phi removal.
     for block in builder.blocks.iter_mut() {
         block.instrs.retain(|i| !matches!(i, IrInstruction::Nop));
     }
+
+    // ── Step 3: build old_id → new_id remapping table ────────────────────
+    // new_id[old] = Some(compacted index) for reachable blocks, None for dead.
+    let mut new_id: Vec<Option<usize>> = vec![None; n];
+    let mut counter = 0usize;
+    for old in 0..n {
+        if reachable[old] {
+            new_id[old] = Some(counter);
+            counter += 1;
+        }
+    }
+
+    // Helper closure: remap a block ID, panicking if a reachable reference
+    // points to a dead block (that would be a bug in the severing step above).
+    let remap = |old: usize| -> usize {
+        new_id[old].unwrap_or_else(|| panic!("reachable block references dead block {old}"))
+    };
+
+    // ── Step 4: filter to only reachable blocks ───────────────────────────
+    let mut compacted: Vec<_> = builder.blocks
+        .drain(..)
+        .filter(|b| reachable[b.id])
+        .collect();
+
+    // ── Step 5: rewrite all block-ID references ───────────────────────────
+    for block in &mut compacted {
+        block.id = remap(block.id);
+        for s in &mut block.successors  { *s = remap(*s); }
+        for p in &mut block.predecessors { *p = remap(*p); }
+
+        for inst in &mut block.instrs {
+            if let IrInstruction::PhiAssign(phi) = inst {
+                phi.block = remap(phi.block);
+                for (_, pred) in &mut phi.operands {
+                    *pred = remap(*pred);
+                }
+            }
+            // Jmp / Br targets are just BasicBlockIds stored in the instruction.
+            match inst {
+                IrInstruction::Jmp(t) => *t = remap(*t),
+                IrInstruction::Br(_, t, f) => { *t = remap(*t); *f = remap(*f); }
+                _ => {}
+            }
+        }
+    }
+
+    builder.blocks = compacted;
 }
+
+
+

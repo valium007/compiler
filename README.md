@@ -3,4 +3,7 @@
 there are three IRs:
 ```
 JSON -> brilIR -> SSA IR
+
+FULLY VIBECODED register allocator. I love Anthropic. I love Claude.
+
 ```

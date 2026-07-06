@@ -25,6 +25,7 @@ use super::forbidden::Forbidden;
 use super::liveness::Liveness;
 use super::preference::Preferences;
 use super::spill::SpillResult;
+use super::uses;
 use super::{AllocFunction, Allocation, OperandKind, PReg, RegClass, Var};
 
 pub struct Assignment {
@@ -58,7 +59,7 @@ pub fn run<F: AllocFunction>(
     let chunk_index = affinity.chunk_members_index(all_vars);
 
     // Pre-compute next-use lists for the dies-here test inside blocks.
-    let next_use = compute_next_use(input.func);
+    let next_use = uses::compute_next_use(input.func);
 
     for &b in input.block_order {
         let mut occupied: HashMap<PReg, Var> = HashMap::new();
@@ -72,16 +73,33 @@ pub fn run<F: AllocFunction>(
             }
         }
 
+        // Snapshot of which vars cannot be retroactively re-homed by Alg 3
+        // displacement: anything live-in here was committed to its preg by
+        // earlier blocks, and changing it now would invalidate prior coloring
+        // (see Braun §3.2 — Alg 3 is a *local* displacement technique).
+        let pinned_homes: HashSet<Var> = input.liveness.live_in[b].iter().copied().collect();
+
         // Color phis at block entry. Phi.operand assignments are NOT
         // known yet (operands belong to predecessors). We only color the
         // phi.dst here; the predecessor moves get emitted post-pass.
+        //
+        // CRITICAL: every phi-def in this block must end up with a UNIQUE
+        // home preg, even if it's immediately dead. The phi-resolution
+        // moves at pred terminators are a parallel copy — two phi-defs
+        // sharing a preg would create two writes to the same destination
+        // on the incoming edge, and `parallel_move::sequentialize` would
+        // pick one ordering, losing the other phi-def's value. So we
+        // *defer* freeing dead phi-defs until after all phi-defs are
+        // colored: keep them in `occupied` throughout the loop, then
+        // release them in one sweep before the non-phi pass begins.
+        let mut dead_phi_pregs: Vec<PReg> = Vec::new();
         for inst in input.func.block_instructions(b) {
             if !input.func.is_phi(inst) {
                 continue;
             }
-            let dst = match input.func.inst_operands(inst).first() {
-                Some(op) if op.kind == OperandKind::Def => op.var,
-                _ => continue,
+            let dst = match input.func.inst_operands(inst).iter().find(|op| op.kind == OperandKind::Def) {
+                Some(op) => op.var,
+                None => continue,
             };
             if input.spill.spilled_vars.contains(&dst) {
                 continue; // spilled — no preg assignment
@@ -97,6 +115,7 @@ pub fn run<F: AllocFunction>(
                 input.allocatable_by_class,
                 &mut vreg_alloc,
                 block_freq,
+                &pinned_homes,
             );
             if let Some(p) = chosen {
                 vreg_alloc.insert(dst, Allocation::Reg(p));
@@ -106,16 +125,19 @@ pub fn run<F: AllocFunction>(
                     input.liveness, b,
                 );
 
-                let inst_flat = inst * 2 + 1;
-                let has_later_use = input.liveness.live_out[b].contains(&dst) || next_use
-                    .get(&dst)
-                    .map_or(false, |ul| ul.iter().any(|&u| u > inst_flat));
+                let has_later_use = input.liveness.live_out[b].contains(&dst)
+                    || uses::has_use_after(&next_use, dst, inst);
                 if !has_later_use {
-                    occupied.remove(&p);
+                    dead_phi_pregs.push(p);
                 }
             } else {
                 return Err(dst);
             }
+        }
+        // Now that every phi-def has a distinct home, release the dead ones
+        // so the non-phi pass can reuse those pregs freely.
+        for p in dead_phi_pregs {
+            occupied.remove(&p);
         }
 
         // Walk non-phi instructions in order.
@@ -124,18 +146,15 @@ pub fn run<F: AllocFunction>(
                 continue;
             }
 
-            // (a) Free dying uses (uses that have no later use in this
-            //     instruction's flat-index range or beyond).
-            let inst_flat = inst * 2 + 1;
+            // (a) Free dying uses.
             for op in input.func.inst_operands(inst) {
                 if op.kind == OperandKind::Use {
                     let v = op.var;
                     if input.spill.spilled_vars.contains(&v) {
                         continue;
                     }
-                    let dies_here = !input.liveness.live_out[b].contains(&v) && next_use
-                        .get(&v)
-                        .map_or(true, |ul| !ul.iter().any(|&u| u > inst_flat));
+                    let dies_here = !input.liveness.live_out[b].contains(&v)
+                        && !uses::has_use_after(&next_use, v, inst);
                     if dies_here {
                         if let Some(&Allocation::Reg(p)) = vreg_alloc.get(&v) {
                             if occupied.get(&p) == Some(&v) {
@@ -164,6 +183,7 @@ pub fn run<F: AllocFunction>(
                         input.allocatable_by_class,
                         &mut vreg_alloc,
                         block_freq,
+                        &pinned_homes,
                     );
                     if let Some(p) = chosen {
                         vreg_alloc.insert(v, Allocation::Reg(p));
@@ -173,9 +193,8 @@ pub fn run<F: AllocFunction>(
                             input.liveness, b,
                         );
 
-                        let has_later_use = input.liveness.live_out[b].contains(&v) || next_use
-                            .get(&v)
-                            .map_or(false, |ul| ul.iter().any(|&u| u > inst_flat));
+                        let has_later_use = input.liveness.live_out[b].contains(&v)
+                            || uses::has_use_after(&next_use, v, inst);
                         if !has_later_use {
                             occupied.remove(&p);
                         }
@@ -205,6 +224,7 @@ fn get_register(
     allocatable_by_class: &HashMap<RegClass, Vec<PReg>>,
     vreg_alloc: &mut HashMap<Var, Allocation>,
     block_freq: u32,
+    pinned_homes: &HashSet<Var>,
 ) -> Option<PReg> {
     let pool = allocatable_by_class
         .get(&v.class)
@@ -242,7 +262,26 @@ fn get_register(
     let ovar_ranked = prefs.sorted_pregs(ovar, pool);
     let ovar_current_pref = prefs.score(ovar, desired);
 
+    // Alg 3 displacement is DISABLED until we can emit physical moves.
+    //
+    // The paper prescribes a move at ovar's last use before the
+    // displacement point — otherwise `vreg_alloc` claims ovar has been
+    // re-homed but machine state still has it at the old preg. Worse,
+    // `oreg` may have been held by another var whose live range overlaps
+    // ovar's. At the moment of displacement that other var has died and
+    // is gone from `occupied`, but its home in `vreg_alloc` still points
+    // at `oreg`, so the final allocation has two vars sharing `oreg`
+    // with overlapping live ranges — caught by the checker and the
+    // disjoint-homes sanity check.
+    //
+    // To re-enable: assignment must emit `AllocMove` edits, and Alg 3
+    // must verify `oreg` is free across all of ovar's remaining live
+    // range (not just the current point).
+    let _ = pinned_homes;
+    let ovar_displaceable = false;
+
     // ── Single-level Alg 3 ────────────────────────────────────────────────
+    if ovar_displaceable {
     if let Some(oreg) = ovar_ranked.iter().copied().find(|&op| {
         op != desired && !occupied.contains_key(&op) && !forbidden.is_forbidden(ovar, op)
     }) {
@@ -254,16 +293,21 @@ fn get_register(
             return Some(desired);
         }
     }
+    }
 
     // ── Two-level chain (#6) ─────────────────────────────────────────────
     // ovar can't find a free slot; try: ovar → oreg (occupied by wvar),
     // wvar → wreg (free). If both displacements are net-profitable, do chain.
+    if ovar_displaceable {
     'chain: for &oreg in &ovar_ranked {
         if oreg == desired || forbidden.is_forbidden(ovar, oreg) { continue; }
         let &wvar = match occupied.get(&oreg) {
             Some(w) => w,
             None => continue, // free — would have been taken by single-level above
         };
+        // Same constraint: wvar's home cannot be retroactively changed if
+        // it was committed upstream.
+        if pinned_homes.contains(&wvar) { continue; }
         let wvar_ranked = prefs.sorted_pregs(wvar, pool);
         let wreg = wvar_ranked.iter().copied().find(|&wp| {
             wp != oreg && wp != desired
@@ -274,7 +318,8 @@ fn get_register(
 
         let ovar_loss = ovar_current_pref - prefs.score(ovar, oreg);
         let wvar_loss = prefs.score(wvar, oreg) - prefs.score(wvar, wreg);
-        if v_gain - ovar_loss - wvar_loss > block_freq as i32 {
+        // Two moves are emitted (ovar→oreg, wvar→wreg), so the threshold is 2× exec-freq.
+        if v_gain - ovar_loss - wvar_loss > 2 * block_freq as i32 {
             vreg_alloc.insert(wvar, Allocation::Reg(wreg));
             occupied.remove(&oreg);
             occupied.insert(wreg, wvar);
@@ -283,6 +328,7 @@ fn get_register(
             occupied.insert(oreg, ovar);
             return Some(desired);
         }
+    }
     }
 
     // Optimistic displacement wasn't worth it. Fall back to first_free.
@@ -297,6 +343,7 @@ fn get_register(
             Some(o) => o,
             None => return Some(p), // shouldn't happen but take it
         };
+        if pinned_homes.contains(&ovar2) { continue; }
         let ovar2_ranked = prefs.sorted_pregs(ovar2, pool);
         let ovar2_cur = prefs.score(ovar2, p);
         let Some(oreg2) = ovar2_ranked.iter().copied().find(|&op| {
@@ -359,29 +406,3 @@ pub fn collect_all_vars<F: AllocFunction>(func: &F) -> Vec<Var> {
     out
 }
 
-fn compute_next_use<F: AllocFunction>(func: &F) -> HashMap<Var, Vec<usize>> {
-    let mut uses: HashMap<Var, Vec<usize>> = HashMap::new();
-    for inst in 0..func.num_instructions() {
-        let flat = inst * 2 + 1;
-        for op in func.inst_operands(inst) {
-            if op.kind == OperandKind::Use {
-                uses.entry(op.var).or_default().push(flat);
-            }
-        }
-    }
-    for b in 0..func.num_blocks() {
-        let term = func.block_instructions(b).end.saturating_sub(1);
-        let flat = term * 2 + 1;
-        for &succ in func.block_successors(b) {
-            for inst in func.block_instructions(succ) {
-                if func.is_phi(inst) {
-                    uses.entry(func.phi_op(inst, b)).or_default().push(flat);
-                }
-            }
-        }
-    }
-    for ul in uses.values_mut() {
-        ul.sort_unstable();
-    }
-    uses
-}

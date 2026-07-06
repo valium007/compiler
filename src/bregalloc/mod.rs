@@ -16,11 +16,13 @@ pub mod affinity;
 pub mod assignment;
 pub mod block_order;
 pub mod cfg;
+pub mod checker;
 pub mod forbidden;
 pub mod liveness;
 pub mod output;
 pub mod preference;
 pub mod spill;
+pub mod uses;
 
 /// Register file partition. Allocation is partitioned by class: a value of
 /// one class can never be considered for a physical register of another.
@@ -179,7 +181,7 @@ pub fn allocate<F: AllocFunction>(
     // 1–2. Liveness, CFG, frequencies.
     let liveness = liveness::Liveness::compute(func);
     let cfg = cfg::Cfg::build(func);
-    let freqs = block_order::freqs_from_loop_depth(func);
+    let freqs = block_order::freqs_from_loop_depth(func, &cfg);
 
     // Partition allocatable pregs by class. Scratches are removed from the
     // allocatable pool so they remain available as transients.
@@ -195,8 +197,8 @@ pub fn allocate<F: AllocFunction>(
         allocatable_by_class.entry(p.class).or_default().push(p);
     }
 
-    // 3. Spill pass.
-    let mut spill_result = spill::run(func, &filtered_allocatable);
+    // 3. Spill pass — reuse already-computed liveness and cfg.
+    let mut spill_result = spill::run(func, &filtered_allocatable, &liveness, &cfg);
 
     // 4. Forbidden pregs.
     let forbidden_set = forbidden::Forbidden::compute(func, &liveness);
@@ -243,6 +245,9 @@ pub fn allocate<F: AllocFunction>(
                     spill_result.spill_slots.insert(v, SpillSlot(next_slot as u32));
                     next_slot += 1;
                     spill_result.num_spillslots = next_slot;
+                    // Prune v from preference map — it no longer competes for a
+                    // register so there is no point sorting/broadcasting its prefs.
+                    prefs.pref.remove(&v);
                 }
             }
         }

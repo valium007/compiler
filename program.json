@@ -1,516 +1,141 @@
 {
   "functions": [
     {
-      "args": [
-        {
-          "name": "x",
-          "type": "int"
-        }
-      ],
       "instrs": [
         {
-          "dest": "c1",
+          "label": "entry"
+        },
+        {
+          "dest": "x",
           "op": "const",
           "type": "int",
-          "value": 7
+          "value": 0
         },
         {
-          "dest": "c2",
+          "dest": "i",
           "op": "const",
           "type": "int",
-          "value": 11
+          "value": 0
         },
         {
-          "dest": "c3",
+          "dest": "one",
           "op": "const",
           "type": "int",
-          "value": 13
+          "value": 1
         },
         {
-          "dest": "c4",
-          "op": "const",
-          "type": "int",
-          "value": 17
+          "label": "loop"
         },
         {
-          "dest": "c5",
-          "op": "const",
-          "type": "int",
-          "value": 19
-        },
-        {
-          "dest": "c6",
-          "op": "const",
-          "type": "int",
-          "value": 23
-        },
-        {
-          "dest": "c7",
-          "op": "const",
-          "type": "int",
-          "value": 29
-        },
-        {
-          "dest": "c8",
-          "op": "const",
-          "type": "int",
-          "value": 31
-        },
-        {
-          "dest": "c9",
-          "op": "const",
-          "type": "int",
-          "value": 37
-        },
-        {
-          "dest": "c10",
-          "op": "const",
-          "type": "int",
-          "value": 41
-        },
-        {
-          "dest": "c11",
-          "op": "const",
-          "type": "int",
-          "value": 43
-        },
-        {
-          "dest": "c12",
-          "op": "const",
-          "type": "int",
-          "value": 47
-        },
-        {
-          "dest": "c13",
-          "op": "const",
-          "type": "int",
-          "value": 53
-        },
-        {
-          "dest": "c14",
-          "op": "const",
-          "type": "int",
-          "value": 59
-        },
-        {
-          "dest": "c15",
-          "op": "const",
-          "type": "int",
-          "value": 61
-        },
-        {
-          "dest": "c16",
-          "op": "const",
-          "type": "int",
-          "value": 67
-        },
-        {
-          "dest": "c17",
-          "op": "const",
-          "type": "int",
-          "value": 71
-        },
-        {
-          "dest": "c18",
-          "op": "const",
-          "type": "int",
-          "value": 73
-        },
-        {
-          "dest": "c19",
-          "op": "const",
-          "type": "int",
-          "value": 79
-        },
-        {
-          "dest": "c20",
-          "op": "const",
-          "type": "int",
-          "value": 83
-        },
-        {
-          "args": [
-            "x",
-            "c1"
-          ],
-          "dest": "a1",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c2"
-          ],
-          "dest": "a2",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c3"
-          ],
-          "dest": "a3",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c4"
-          ],
-          "dest": "a4",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c5"
-          ],
-          "dest": "a5",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c6"
-          ],
-          "dest": "a6",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c7"
-          ],
-          "dest": "a7",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c8"
-          ],
-          "dest": "a8",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c9"
-          ],
-          "dest": "a9",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c10"
-          ],
-          "dest": "a10",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c11"
-          ],
-          "dest": "a11",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c12"
-          ],
-          "dest": "a12",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c13"
-          ],
-          "dest": "a13",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c14"
-          ],
-          "dest": "a14",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c15"
-          ],
-          "dest": "a15",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c16"
-          ],
-          "dest": "a16",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c17"
-          ],
-          "dest": "a17",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c18"
-          ],
-          "dest": "a18",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c19"
-          ],
-          "dest": "a19",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "x",
-            "c20"
-          ],
-          "dest": "a20",
-          "op": "mul",
-          "type": "int"
-        },
-        {
-          "args": [
-            "a1",
-            "a2"
-          ],
-          "dest": "s1",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s1",
-            "a3"
-          ],
-          "dest": "s2",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s2",
-            "a4"
-          ],
-          "dest": "s3",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s3",
-            "a5"
-          ],
-          "dest": "s4",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s4",
-            "a6"
-          ],
-          "dest": "s5",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s5",
-            "a7"
-          ],
-          "dest": "s6",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s6",
-            "a8"
-          ],
-          "dest": "s7",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s7",
-            "a9"
-          ],
-          "dest": "s8",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s8",
-            "a10"
-          ],
-          "dest": "s9",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s9",
-            "a11"
-          ],
-          "dest": "s10",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s10",
-            "a12"
-          ],
-          "dest": "s11",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s11",
-            "a13"
-          ],
-          "dest": "s12",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s12",
-            "a14"
-          ],
-          "dest": "s13",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s13",
-            "a15"
-          ],
-          "dest": "s14",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s14",
-            "a16"
-          ],
-          "dest": "s15",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s15",
-            "a17"
-          ],
-          "dest": "s16",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s16",
-            "a18"
-          ],
-          "dest": "s17",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s17",
-            "a19"
-          ],
-          "dest": "s18",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s18",
-            "a20"
-          ],
-          "dest": "s19",
-          "op": "add",
-          "type": "int"
-        },
-        {
-          "args": [
-            "s19"
-          ],
-          "op": "ret"
-        }
-      ],
-      "name": "spillme",
-      "type": "int"
-    },
-    {
-      "instrs": [
-        {
-          "dest": "n",
+          "dest": "max",
           "op": "const",
           "type": "int",
           "value": 10
         },
         {
           "args": [
-            "n"
+            "i",
+            "max"
           ],
-          "dest": "r",
-          "funcs": [
-            "spillme"
+          "dest": "cond",
+          "op": "lt",
+          "type": "bool"
+        },
+        {
+          "args": [
+            "cond"
           ],
-          "op": "call",
+          "labels": [
+            "body",
+            "exit"
+          ],
+          "op": "br"
+        },
+        {
+          "label": "body"
+        },
+        {
+          "dest": "mid",
+          "op": "const",
+          "type": "int",
+          "value": 5
+        },
+        {
+          "args": [
+            "i",
+            "mid"
+          ],
+          "dest": "cond",
+          "op": "lt",
+          "type": "bool"
+        },
+        {
+          "args": [
+            "cond"
+          ],
+          "labels": [
+            "then",
+            "endif"
+          ],
+          "op": "br"
+        },
+        {
+          "label": "then"
+        },
+        {
+          "args": [
+            "x",
+            "one"
+          ],
+          "dest": "x",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "labels": [
+            "endif"
+          ],
+          "op": "jmp"
+        },
+        {
+          "label": "endif"
+        },
+        {
+          "dest": "factor",
+          "op": "const",
+          "type": "int",
+          "value": 2
+        },
+        {
+          "args": [
+            "x",
+            "factor"
+          ],
+          "dest": "x",
+          "op": "mul",
           "type": "int"
         },
         {
           "args": [
-            "r"
+            "i",
+            "one"
+          ],
+          "dest": "i",
+          "op": "add",
+          "type": "int"
+        },
+        {
+          "labels": [
+            "loop"
+          ],
+          "op": "jmp"
+        },
+        {
+          "label": "exit"
+        },
+        {
+          "args": [
+            "x"
           ],
           "op": "print"
         }

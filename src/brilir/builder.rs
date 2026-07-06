@@ -1,6 +1,6 @@
 use crate::brilir::instruction::IrInstruction;
 use crate::brilir::instruction::{Variable,BasicBlockId};
-use hashbrown::HashSet;
+use std::collections::HashSet;
 use std::fmt::Debug;
 
 #[derive(Clone)]
@@ -13,14 +13,14 @@ pub struct BasicBlock {
 
 impl Debug for BasicBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "");
+        writeln!(f, "")?;
         writeln!(
             f,
             "bb_{} succs: {:?} preds: {:?}",
             self.id, self.successors, self.predecessors
-        );
+        )?;
         for instr in self.instrs.iter() {
-            writeln!(f, "  {:?}", instr);
+            writeln!(f, "  {:?}", instr)?;
         }
         write!(f, "")
     }

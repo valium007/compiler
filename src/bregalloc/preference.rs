@@ -2,24 +2,22 @@
 //!
 //! For each variable v, `pref[v]` maps a `PReg` to a signed score: positive
 //! values are "v wants this preg", negative are "v dislikes it". The scores
-//! drive `get_register` during assignment: at each def, we sort the
-//! per-var preference map by score and pick the highest-scoring preg that
-//! is free and not forbidden.
+//! drive `get_register` during assignment.
 //!
-//! The vector is initialized by walking the program once: at every inst
-//! where v is live, accumulate the constraint vector weighted by the
-//! block's execution frequency. The paper's constraint vector is:
+//! The paper's constraint vector formula (§3.2):
 //!
-//!   c_l(v) = e_R - 1      if v has Fixed(R) at l   (boost R, slight dislike of others)
-//!          = -Σ e_R'       otherwise               (dislike pregs claimed by others)
+//!   c_l(v) = e_R - 1      if v has Fixed(R) at l   (boost R, penalise others)
+//!          = -Σ e_R'       otherwise               (dislike pregs claimed here)
 //!
-//! In our implementation we keep `e_R - 1` simpler: just boost R by freq,
-//! no penalty on others. The "dislike others" effect is provided by the
-//! Σ -e_R' contribution from instructions where some OTHER var is fixed.
+//! Critically, the paper sums *use* constraints over program points where v is
+//! alive **before** l (live_before), and *def* constraints over points where v
+//! is alive **after** l (live_after).  We honour that distinction so that, e.g.,
+//! a def at a call instruction doesn't incorrectly dislike the call's clobbers.
 
 use std::collections::HashMap;
 
 use super::liveness::Liveness;
+use super::uses;
 use super::{AllocFunction, Constraint, OperandKind, PReg, RegClass, Var};
 
 #[derive(Clone)]
@@ -35,80 +33,49 @@ impl Preferences {
         allocatable_by_class: &HashMap<RegClass, Vec<PReg>>,
     ) -> Self {
         let mut pref: HashMap<Var, HashMap<PReg, i32>> = HashMap::new();
+        let next_use = uses::compute_next_use(func);
 
-        let next_use = compute_next_use_lists(func);
-
-        // Per-block forward walk: maintain live_now = live_before(inst).
         for b in 0..func.num_blocks() {
             let freq = freqs.get(b).copied().unwrap_or(1) as i32;
             let mut live_now = liveness.live_in[b].clone();
-            for inst in func.block_instructions(b) {
-                // Vars live at this inst: live_now (live_before) + defs.
-                let mut defs_here: Vec<Var> = Vec::new();
-                for op in func.inst_operands(inst) {
-                    if op.kind == OperandKind::Def {
-                        defs_here.push(op.var);
-                    }
-                }
 
-                // Gather Fixed claims at this inst: (preg, var-fixed-here).
-                let mut claims: Vec<(PReg, Var)> = Vec::new();
+            for inst in func.block_instructions(b) {
+                // Partition Fixed constraints into Use-kind and Def-kind owners.
+                let mut use_owners: HashMap<PReg, Vec<Var>> = HashMap::new();
+                let mut def_owners: HashMap<PReg, Vec<Var>> = HashMap::new();
                 for op in func.inst_operands(inst) {
                     if let Constraint::Fixed(p) = op.constraint {
-                        claims.push((p, op.var));
-                    }
-                }
-
-                // Update preferences for all vars alive at this inst.
-                let mut alive_here: Vec<Var> = live_now.iter().copied().collect();
-                for &d in &defs_here {
-                    if !alive_here.contains(&d) {
-                        alive_here.push(d);
-                    }
-                }
-
-                // Group fixed claims by register.
-                let mut preg_owners: HashMap<PReg, Vec<Var>> = HashMap::new();
-                for &(p, owner) in &claims {
-                    preg_owners.entry(p).or_default().push(owner);
-                }
-
-                for &v in &alive_here {
-                    for (&p, owners) in &preg_owners {
-                        if p.class != v.class {
-                            continue;
-                        }
-                        let entry = pref.entry(v).or_default().entry(p).or_insert(0);
-                        if owners.contains(&v) {
-                            // v itself wants p: boost p.
-                            *entry += freq;
-                            // Paper §3.2: c_l(v) = e_R − 1. The −1 means every
-                            // other allocatable reg of this class gets a dislike
-                            // equal to freq, biasing v firmly toward p.
-                            if let Some(pool) = allocatable_by_class.get(&v.class) {
-                                for &other in pool {
-                                    if other != p {
-                                        *pref.entry(v).or_default().entry(other).or_insert(0) -= freq;
-                                    }
-                                }
-                            }
-                        } else {
-                            // Someone else claims p here: v dislikes p.
-                            *entry -= freq;
+                        match op.kind {
+                            OperandKind::Use => use_owners.entry(p).or_default().push(op.var),
+                            OperandKind::Def => def_owners.entry(p).or_default().push(op.var),
                         }
                     }
                 }
 
-                // Advance live_now: add defs, remove dying uses.
-                for &d in &defs_here {
-                    live_now.insert(d);
+                // (A) USE constraints — apply to live_before = live_now.
+                //     Paper: Σ_{l | v alive before l} f_l · c_l^use(v)
+                if !use_owners.is_empty() {
+                    apply_prefs(&live_now, &use_owners, freq, &mut pref, allocatable_by_class);
+                }
+
+                // Advance live_now to live_after: add defs then remove dying uses.
+                for op in func.inst_operands(inst) {
+                    if op.kind == OperandKind::Def {
+                        live_now.insert(op.var);
+                    }
                 }
                 for op in func.inst_operands(inst) {
-                    if op.kind == OperandKind::Use {
-                        if !has_use_after(&next_use, op.var, inst) {
-                            live_now.remove(&op.var);
-                        }
+                    if op.kind == OperandKind::Use
+                        && !uses::has_use_after(&next_use, op.var, inst)
+                    {
+                        live_now.remove(&op.var);
                     }
+                }
+
+                // (B) DEF constraints — apply to live_after = live_now (post-advance).
+                //     Paper: Σ_{l | v alive after l} f_l · c_l^def(v)
+                if !def_owners.is_empty() {
+                    apply_prefs(&live_now, &def_owners, freq, &mut pref, allocatable_by_class);
                 }
             }
         }
@@ -117,36 +84,40 @@ impl Preferences {
     }
 }
 
-fn compute_next_use_lists<F: AllocFunction>(func: &F) -> HashMap<Var, Vec<usize>> {
-    let mut uses: HashMap<Var, Vec<usize>> = HashMap::new();
-    for inst in 0..func.num_instructions() {
-        let flat = inst * 2 + 1;
-        for op in func.inst_operands(inst) {
-            if op.kind == OperandKind::Use {
-                uses.entry(op.var).or_default().push(flat);
+/// Apply preference contributions from a single instruction's Fixed constraints
+/// to all vars in `alive`.
+///
+/// For each claimed preg p:
+///   - If v is the var fixed to p: boost p by freq and penalise all other
+///     allocatable regs of v's class (paper's `e_R − 1`).
+///   - Otherwise: penalise p by freq (paper's `−Σ e_R'`).
+fn apply_prefs(
+    alive: &std::collections::HashSet<Var>,
+    owners: &HashMap<PReg, Vec<Var>>,
+    freq: i32,
+    pref: &mut HashMap<Var, HashMap<PReg, i32>>,
+    allocatable_by_class: &HashMap<RegClass, Vec<PReg>>,
+) {
+    for &v in alive {
+        for (&p, own) in owners {
+            if p.class != v.class {
+                continue;
             }
-        }
-    }
-    for b in 0..func.num_blocks() {
-        let term = func.block_instructions(b).end.saturating_sub(1);
-        let flat = term * 2 + 1;
-        for &succ in func.block_successors(b) {
-            for inst in func.block_instructions(succ) {
-                if func.is_phi(inst) {
-                    uses.entry(func.phi_op(inst, b)).or_default().push(flat);
+            let e = pref.entry(v).or_default().entry(p).or_insert(0);
+            if own.contains(&v) {
+                *e += freq;
+                if let Some(pool) = allocatable_by_class.get(&v.class) {
+                    for &other in pool {
+                        if other != p {
+                            *pref.entry(v).or_default().entry(other).or_insert(0) -= freq;
+                        }
+                    }
                 }
+            } else {
+                *e -= freq;
             }
         }
     }
-    for ul in uses.values_mut() {
-        ul.sort_unstable();
-    }
-    uses
-}
-
-fn has_use_after(next_use: &HashMap<Var, Vec<usize>>, v: Var, inst: usize) -> bool {
-    let after_flat = inst * 2 + 1 + 1;
-    next_use.get(&v).map_or(false, |ul| ul.iter().any(|&u| u >= after_flat))
 }
 
 impl Preferences {
@@ -157,7 +128,7 @@ impl Preferences {
     }
 
     /// Pregs sorted by preference score, descending. Pregs with no entry
-    /// (score 0) come last in arbitrary order. Used by get_register.
+    /// (score 0) come last in stable pool order.
     pub fn sorted_pregs(&self, v: Var, pool: &[PReg]) -> Vec<PReg> {
         let empty: HashMap<PReg, i32> = HashMap::new();
         let scores = self.pref.get(&v).unwrap_or(&empty);

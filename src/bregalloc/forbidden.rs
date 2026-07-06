@@ -14,6 +14,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::liveness::Liveness;
+use super::uses;
 use super::{AllocFunction, Constraint, OperandKind, PReg, Var};
 
 pub struct Forbidden {
@@ -29,36 +30,6 @@ impl Forbidden {
         let last_use = compute_last_use(func);
 
         let mut forbidden: HashMap<Var, HashSet<PReg>> = HashMap::new();
-
-        // Walk each instruction. For each preg "claimed" at this inst
-        // (clobber or some operand has Fixed(preg)), any var that's live
-        // across this inst (or defined here) gets preg into its forbidden
-        // set, except for the carve-out.
-        for inst in 0..n_inst {
-            // Gather the claims.
-            let mut claims: HashSet<PReg> = HashSet::new();
-            for &p in func.inst_clobbers(inst) {
-                claims.insert(p);
-            }
-            for op in func.inst_operands(inst) {
-                if let Constraint::Fixed(p) = op.constraint {
-                    claims.insert(p);
-                }
-            }
-            if claims.is_empty() {
-                continue;
-            }
-
-            // Vars potentially conflicting at this inst: live_before + defs.
-            // live_before(inst) = live_in[block_of(inst)] adjusted for the
-            // instructions earlier in the block. We compute it per block.
-            // For simplicity here, we use the per-block live_in plus a
-            // forward walk inside the block.
-            //   (Recomputing per-block is expensive but bounded; for small
-            //    functions this is fine.)
-
-            // The forward walk is done lazily below in `live_at_inst`.
-        }
 
         let live_at = LiveAtInst::build(func, liveness);
 
@@ -169,14 +140,14 @@ impl LiveAtInst {
         let n_inst = func.num_instructions();
         let mut per_inst: Vec<HashSet<Var>> = vec![HashSet::new(); n_inst];
 
-        let next_use = compute_next_use_lists(func);
+        let next_use = uses::compute_next_use(func);
 
         for b in 0..func.num_blocks() {
-            let block_end = func.block_instructions(b).end;
-            // Forward walk inside b, maintaining live_now = live_before(I).
+            // block_end_flat: first flat index belonging to a *different* block.
+            // Valid flat indices in b are [block_start*2, block_end*2).
+            let block_end_flat = func.block_instructions(b).end * 2;
             let mut live_now = liveness.live_in[b].clone();
             for inst in func.block_instructions(b) {
-                // Set "live at inst" = live_now ∪ defs(inst).
                 let mut at = live_now.clone();
                 for op in func.inst_operands(inst) {
                     if op.kind == OperandKind::Def {
@@ -189,7 +160,7 @@ impl LiveAtInst {
                 for op in func.inst_operands(inst) {
                     if op.kind == OperandKind::Use {
                         if !liveness.live_out[b].contains(&op.var)
-                            && !has_use_in_block_after(&next_use, op.var, inst, block_end)
+                            && !has_use_in_block_after(&next_use, op.var, inst, block_end_flat)
                         {
                             live_now.remove(&op.var);
                         }
@@ -210,28 +181,16 @@ impl LiveAtInst {
     }
 }
 
-fn compute_next_use_lists<F: AllocFunction>(func: &F) -> HashMap<Var, Vec<usize>> {
-    let mut uses: HashMap<Var, Vec<usize>> = HashMap::new();
-    for inst in 0..func.num_instructions() {
-        for op in func.inst_operands(inst) {
-            if op.kind == OperandKind::Use {
-                uses.entry(op.var).or_default().push(inst);
-            }
-        }
-    }
-    for ul in uses.values_mut() {
-        ul.sort_unstable();
-    }
-    uses
-}
-
+/// Returns true if v has any use strictly after `inst` and before `block_end_flat`
+/// (exclusive), all in flat-index space.
 fn has_use_in_block_after(
     next_use: &HashMap<Var, Vec<usize>>,
     v: Var,
     inst: usize,
-    block_end: usize,
+    block_end_flat: usize,
 ) -> bool {
-    next_use.get(&v).map_or(false, |ul| {
-        ul.iter().any(|&u| u > inst && u < block_end)
-    })
+    let after = inst * 2 + 2;
+    next_use
+        .get(&v)
+        .map_or(false, |ul| ul.iter().any(|&u| u >= after && u < block_end_flat))
 }

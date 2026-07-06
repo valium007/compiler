@@ -99,15 +99,20 @@ fn add_chain<F: AllocFunction>(
     }
 }
 
-/// Convenience: derive `freqs` from `func.loop_depth(b)` as `2^depth`, so
-/// each level of nesting multiplies weight by 2. Capped to avoid u32
-/// overflow for absurdly nested loops.
-pub fn freqs_from_loop_depth<F: AllocFunction>(func: &F) -> Vec<u32> {
+/// Derive `freqs` from loop nesting depth as `2^depth`.
+///
+/// Priority: if `func.loop_depth(b)` returns a non-zero value (caller has
+/// profile data or annotated depths), use that.  Otherwise fall back to the
+/// structural depth computed from back-edges in the CFG.  Either way, depth
+/// is capped at 20 to avoid u32 overflow.
+pub fn freqs_from_loop_depth<F: AllocFunction>(func: &F, cfg: &super::cfg::Cfg) -> Vec<u32> {
     let n = func.num_blocks();
+    let structural = cfg.loop_depths();
     let mut freqs = vec![1u32; n];
     for b in 0..n {
-        let d = func.loop_depth(b).min(20);
-        freqs[b] = 1u32 << d;
+        let func_d = func.loop_depth(b);
+        let d = if func_d > 0 { func_d } else { structural.get(b).copied().unwrap_or(0) };
+        freqs[b] = 1u32 << d.min(20);
     }
     freqs
 }

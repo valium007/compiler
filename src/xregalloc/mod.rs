@@ -1,5 +1,10 @@
 use std::collections::{HashMap, HashSet};
 
+/// Round `n` up to the next multiple of `align`. `align` must be >= 1.
+fn align_up(n: usize, align: usize) -> usize {
+    ((n + align - 1) / align) * align
+}
+
 /// The category of a value, dictating which physical register file it can
 /// live in. Allocation is partitioned by class: an `Int` var can never be
 /// considered for a `Float` preg, and vice versa.
@@ -104,6 +109,21 @@ pub trait AllocFunction {
     fn is_phi(&self, inst: usize) -> bool;
     fn phi_op(&self, inst: usize, pred: usize) -> Var;
     fn is_copy(&self, inst: usize) -> bool;
+
+    /// How many logical spill slots does the given regclass require?
+    ///
+    /// E.g., on a 64-bit machine, spill slots may nominally be 64-bit words,
+    /// but a 128-bit vector value will require two slots. The regalloc will
+    /// always align on this size. Slot indices returned in `SpillSlot(_)` are
+    /// in units of these logical slots.
+    ///
+    /// (Design and doc derive from `regalloc.rs`' trait of the same name.)
+    fn spillslot_size(&self, regclass: RegClass) -> usize {
+        // Default: every class fits in one nominal slot. Backends that have
+        // wider classes (vectors, long/double pairs) override.
+        let _ = regclass;
+        1
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -182,8 +202,14 @@ pub fn allocate<F: AllocFunction>(
                 });
             }
             Err(VarToSpill(v)) => {
+                // Slot indices and `next_spill_slot` are in *logical slots*
+                // (the unit `spillslot_size` returns). A class needing N slots
+                // is also aligned on N — so a width-2 vector slot never
+                // straddles a width-1 int slot's pair-boundary.
+                let size = func.spillslot_size(v.class).max(1);
+                next_spill_slot = align_up(next_spill_slot, size);
                 spilled_vars.insert(v, SpillSlot(next_spill_slot as u32));
-                next_spill_slot += 1;
+                next_spill_slot += size;
             }
         }
     }
@@ -415,11 +441,20 @@ impl<'a, F: AllocFunction> Ctx<'a, F> {
                 .get(&first)
                 .map_or(false, |us| us.iter().any(|&u| u > last_def_flat))
         } else {
-            let (non_live_out, live_out_def_flat) = if lhs_live_out {
-                (rhs, lhs_def_flat)
+            let (non_live_out, non_live_out_def_flat, live_out_def_flat) = if lhs_live_out {
+                (rhs, rhs_def_flat, lhs_def_flat)
             } else {
-                (lhs, rhs_def_flat)
+                (lhs, lhs_def_flat, rhs_def_flat)
             };
+            // non_live_out lives [def_nlo, last_use_nlo]; live_out lives
+            // [def_lo, ∞). If def_nlo >= def_lo then live_out is still in its
+            // register when non_live_out is born — they conflict even if
+            // non_live_out has no uses (a dead def still occupies the def
+            // point). Otherwise, they overlap iff non_live_out has a use
+            // past live_out's def.
+            if non_live_out_def_flat >= live_out_def_flat {
+                return true;
+            }
             self.uses
                 .get(&non_live_out)
                 .map_or(false, |us| us.iter().any(|&u| u > live_out_def_flat))
@@ -846,7 +881,7 @@ fn allocate_attempt<F: AllocFunction>(
         scratch_by_class.entry(p.class).or_default().push(p);
     }
     // Take the next available scratch of `class`, or None if exhausted.
-    let mut take_scratch = |used: &mut HashMap<RegClass, usize>, class: RegClass| -> Option<PReg> {
+    let take_scratch = |used: &mut HashMap<RegClass, usize>, class: RegClass| -> Option<PReg> {
         let idx = used.entry(class).or_insert(0);
         let pool = scratch_by_class.get(&class)?;
         if *idx >= pool.len() {
@@ -933,10 +968,16 @@ fn allocate_attempt<F: AllocFunction>(
         // gets a Stack→Reg load before the instruction; a def gets a
         // Reg→Stack store after.
         //
+        // Phi instructions are EXCLUDED: their Def is set up entirely by the
+        // phi-resolution parallel copies emitted at predecessor tails.
+        // Generating a scratch→stack store here would overwrite the correct
+        // value that the predecessor already deposited in the slot.
+        //
         // When the same spilled var appears multiple times in one
         // instruction, reuse the scratch — one load suffices for repeated
         // uses, and a use+def of the same var shares one slot↔reg pair.
         let mut spill_scratch: HashMap<SpillSlot, PReg> = HashMap::new();
+        if !func.is_phi(inst) {
         for (i, op) in func.inst_operands(inst).iter().enumerate() {
             let Allocation::Stack(slot) = allocs[i] else { continue };
             let scratch = if let Some(&existing) = spill_scratch.get(&slot) {
@@ -963,6 +1004,7 @@ fn allocate_attempt<F: AllocFunction>(
                     });
                 }
             }
+        }
         }
 
         inst_allocs[inst] = allocs;

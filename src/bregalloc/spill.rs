@@ -43,6 +43,7 @@ use std::collections::{HashMap, HashSet};
 
 use super::cfg::Cfg;
 use super::liveness::Liveness;
+use super::uses;
 use super::{AllocFunction, Constraint, OperandKind, PReg, RegClass, SpillSlot, Var};
 
 pub struct SpillResult {
@@ -57,11 +58,11 @@ pub struct SpillResult {
 pub fn run<F: AllocFunction>(
     func: &F,
     allocatable_regs: &[PReg],
+    liveness: &Liveness,
+    cfg: &Cfg,
 ) -> SpillResult {
-    let liveness = Liveness::compute(func);
-    let cfg = Cfg::build(func);
     let pinned_vars = compute_pinned_vars(func);
-    let next_use = compute_next_use_lists(func);
+    let next_use = uses::compute_next_use(func);
     let capacity = capacity_per_class(allocatable_regs);
 
     let mut spilled: HashSet<Var> = HashSet::new();
@@ -110,7 +111,7 @@ pub fn run<F: AllocFunction>(
                     let live_across: Vec<Var> = live_list
                         .iter()
                         .copied()
-                        .filter(|&v| has_use_after(&next_use, v, inst))
+                        .filter(|&v| uses::has_use_after(&next_use, v, inst))
                         .collect();
 
                     if live + defs <= cap && live_across.len() <= live_across_cap {
@@ -160,7 +161,7 @@ pub fn run<F: AllocFunction>(
                 if op.kind == OperandKind::Use {
                     let v = op.var;
                     if spilled.contains(&v) { continue; }
-                    if !has_use_after(&next_use, v, inst) {
+                    if !uses::has_use_after(&next_use, v, inst) {
                         live_now.remove(&v);
                     }
                 }
@@ -208,40 +209,6 @@ fn compute_pinned_vars<F: AllocFunction>(func: &F) -> HashSet<Var> {
         }
     }
     pinned
-}
-
-/// For each var, a sorted list of flat indices `inst * 2 + 1` where it's
-/// used. Phi operands count as uses at the predecessor's terminator.
-fn compute_next_use_lists<F: AllocFunction>(func: &F) -> HashMap<Var, Vec<usize>> {
-    let mut uses: HashMap<Var, Vec<usize>> = HashMap::new();
-    for inst in 0..func.num_instructions() {
-        let flat = inst * 2 + 1;
-        for op in func.inst_operands(inst) {
-            if op.kind == OperandKind::Use {
-                uses.entry(op.var).or_default().push(flat);
-            }
-        }
-    }
-    for b in 0..func.num_blocks() {
-        let term = func.block_instructions(b).end.saturating_sub(1);
-        let flat = term * 2 + 1;
-        for &succ in func.block_successors(b) {
-            for inst in func.block_instructions(succ) {
-                if func.is_phi(inst) {
-                    uses.entry(func.phi_op(inst, b)).or_default().push(flat);
-                }
-            }
-        }
-    }
-    for ul in uses.values_mut() {
-        ul.sort_unstable();
-    }
-    uses
-}
-
-fn has_use_after(next_use: &HashMap<Var, Vec<usize>>, v: Var, inst: usize) -> bool {
-    let after_flat = inst * 2 + 1 + 1; // first flat strictly after `inst`
-    next_use.get(&v).map_or(false, |ul| ul.iter().any(|&u| u >= after_flat))
 }
 
 /// First use of `v` at or after instruction `from_inst`, in flat-index
